@@ -1,0 +1,42 @@
+name: selfsupmotion
+channels:
+  - pytorch
+  - conda-forge
+dependencies:
+  - albumentations
+  - bzip2
+  - cython
+  - ddt
+  - flake8
+  - flake8-docstrings
+  - gitdb
+  - gitpython
+  - h5py
+  - lz4
+  - matplotlib
+  - mlflow
+  - numpy
+  - opencv
+  - pandas
+  - pillow
+  - pip
+  - pytest
+  - pytorch>=1.5
+  - pyturbojpeg
+  - pyyaml
+  - scikit-learn
+  - torchvision
+  - tqdm
+  - umap-learn
+  - pip:
+    - frozendict
+    - orion>=0.1.8
+    - pytorch-lightning>=1.1.5
+    - pytorch-lightning-bolts
+    - sphinx
+    - sphinx-autoapi
+    - sphinx-rtd-theme
+    - sphinxcontrib-napoleon
+    - sphinxcontrib-katex
+    - tensorflow-cpu
+    - recommonmark
