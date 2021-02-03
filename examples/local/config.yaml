@@ -1,14 +1,16 @@
-# general
-batch_size: 32
-optimizer: adam
-loss: L1
+batch_size: 96
+optimizer: sgd
+learning_rate: 0.03
+weight_decay: 0.0005
+lars_wrapper: False
+temperature: 0.1
+architecture: simsiam
+backbone: resnet50
+hidden_mlp: 2048
+feat_dim: 128
 patience: 5
-architecture: my_model
-max_epoch: 99
+max_epoch: 100
 exp_name: my_exp_1
-# set to null to avoid setting a seed (can speed up GPU computation, but
-# results will not be reproducible)
-seed: 1234
-
-# architecture
-size: 10
+gpus: 1
+num_workers: 2
+seed: None

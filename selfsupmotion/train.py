@@ -100,16 +100,25 @@ def reload_model(output, model_name, model, optimizer,
     os.makedirs(output)
 
 
-def train_impl(model, optimizer, loss_fun, train_loader, dev_loader, patience, output,
-               max_epoch, use_progress_bar, start_from_scratch, mlf_logger):  # pragma: no cover
+def train_impl(
+        model,
+        optimizer,
+        loss_fun,
+        datamodule,
+        patience,
+        output,
+        max_epoch,
+        use_progress_bar,
+        start_from_scratch,
+        mlf_logger
+):  # pragma: no cover
     """Main training loop implementation.
 
     Args:
         model (obj): The neural network model object.
         optimizer (obj): Optimizer used during training.
         loss_fun (obj): Loss function that will be optimized.
-        train_loader (obj): Dataloader for the training set.
-        dev_loader (obj): Dataloader for the validation set.
+        datamodule (obj): DataModule that contains both train/valid data loaders.
         patience (int): max number of epochs without improving on `best_eval_score`.
             After this point, the train ends.
         output (str): Output directory.
@@ -145,48 +154,20 @@ def train_impl(model, optimizer, loss_fun, train_loader, dev_loader, patience, o
         logger.info('starting training from scratch')
         resume_from_checkpoint = None
 
-    model = TraineeWrapper(model, optimizer, loss_fun)
     early_stopping = EarlyStopping("val_loss", mode="auto", patience=patience,
                                    verbose=use_progress_bar)
     trainer = pl.Trainer(
+        # @@@@@@@@@@@ TODO check if we can add an online evaluator w/ callback
         callbacks=[early_stopping, best_checkpoint_callback, last_checkpoint_callback],
         checkpoint_callback=True,
         logger=mlf_logger,
         max_epochs=max_epoch,
-        resume_from_checkpoint=resume_from_checkpoint
+        resume_from_checkpoint=resume_from_checkpoint,
+        gpus=torch.cuda.device_count(),
+        auto_select_gpus=True,
+        accelerator=None,  # @@@@@@@@@ TODO CHECK ME OUT w/ precision arg too
     )
 
-    trainer.fit(model, train_dataloader=train_loader, val_dataloaders=[dev_loader])
+    trainer.fit(model, datamodule=datamodule)
     best_dev_result = float(early_stopping.best_score.cpu().numpy())
     return best_dev_result
-
-
-class TraineeWrapper(pl.LightningModule):
-    """Wrapper to a PyTorch model. Used to define train and validation steps."""
-
-    def __init__(self, model, optimizer, loss):
-        """Main constructor."""
-        super().__init__()
-        self.model = model
-        self.optmizer = optimizer
-        self.loss = loss
-
-    def training_step(self, batch, batch_idx):
-        """Training step (PyTorch Lightning takes care to provide the correct batch data."""
-        x, y = batch
-        y_hat = self.model(x)
-        loss_value = self.loss(y_hat, y)
-        self.log('train_loss', loss_value, on_epoch=True)
-        return loss_value
-
-    def validation_step(self, batch, batch_idx):
-        """Validation step (PyTorch Lightning takes care to provide the correct batch data."""
-        x, y = batch
-        y_hat = self.model(x)
-        loss_value = self.loss(y_hat, y)
-        self.log('val_loss', loss_value)
-        return loss_value
-
-    def configure_optimizers(self):
-        """Method used by PyTorch Lighning to set the optimizer."""
-        return self.optmizer

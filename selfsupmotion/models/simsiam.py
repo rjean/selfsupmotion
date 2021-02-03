@@ -1,4 +1,3 @@
-import argparse
 import logging
 import math
 import typing
@@ -18,118 +17,41 @@ logger = logging.getLogger(__name__)
 
 
 class SimSiam(pl.LightningModule):
-    """
-    PyTorch Lightning implementation of `Exploring Simple Siamese Representation Learning (SimSiam)
-    <https://arxiv.org/pdf/2011.10566v1.pdf>`_
-
-    Paper authors: Xinlei Chen, Kaiming He.
-
-    Model implemented by:
-        - `Zvi Lapp <https://github.com/zlapp>`_
-
-    .. warning:: Work in progress. This implementation is still being verified.
-
-    TODOs:
-        - verify on CIFAR-10
-        - verify on STL-10
-        - pre-train on imagenet
-
-    Example::
-
-        model = SimSiam()
-
-        dm = CIFAR10DataModule(num_workers=0)
-        dm.train_transforms = SimCLRTrainDataTransform(32)
-        dm.val_transforms = SimCLREvalDataTransform(32)
-
-        trainer = pl.Trainer()
-        trainer.fit(model, datamodule=dm)
-
-    Train::
-
-        trainer = Trainer()
-        trainer.fit(model)
-
-    CLI command::
-
-        # cifar10
-        python simsiam_module.py --gpus 1
-
-        # imagenet
-        python simsiam_module.py
-            --gpus 8
-            --dataset imagenet2012
-            --data_dir /path/to/imagenet/
-            --meta_dir /path/to/folder/with/meta.bin/
-            --batch_size 32
-    """
 
     def __init__(
             self,
-            gpus: int,
-            num_samples: int,
-            batch_size: int,
-            dataset: str,
-            num_nodes: int = 1,
-            arch: str = 'resnet50',
-            hidden_mlp: int = 2048,
-            feat_dim: int = 128,
-            warmup_epochs: int = 10,
-            max_epochs: int = 100,
-            temperature: float = 0.1,
-            first_conv: bool = True,
-            maxpool1: bool = True,
-            optimizer: str = 'adam',
-            lars_wrapper: bool = True,
-            exclude_bn_bias: bool = False,
-            start_lr: float = 0.,
-            learning_rate: float = 1e-3,
-            final_lr: float = 0.,
-            weight_decay: float = 1e-6,
-            **kwargs
+            hyper_params: typing.Dict[typing.AnyStr, typing.Any],
     ):
-        """
-        Args:
-            datamodule: The datamodule
-            learning_rate: the learning rate
-            weight_decay: optimizer weight decay
-            input_height: image input height
-            batch_size: the batch size
-            num_workers: number of workers
-            warmup_epochs: num of epochs for scheduler warm up
-            max_epochs: max epochs for scheduler
-        """
         super().__init__()
-        self.save_hyperparameters()
+        self.save_hyperparameters(hyper_params)
 
-        self.gpus = gpus
-        self.num_nodes = num_nodes
-        self.arch = arch
-        self.dataset = dataset
-        self.num_samples = num_samples
-        self.batch_size = batch_size
+        self.gpus = hyper_params.get("gpus")
+        self.num_nodes = hyper_params.get("num_nodes", 1)
+        self.backbone = hyper_params.get("backbone", "resnet50")
+        self.num_samples = hyper_params.get("num_samples")
+        self.batch_size = hyper_params.get("batch_size")
 
-        self.hidden_mlp = hidden_mlp
-        self.feat_dim = feat_dim
-        self.first_conv = first_conv
-        self.maxpool1 = maxpool1
+        self.hidden_mlp = hyper_params.get("hidden_mlp", 2048)
+        self.feat_dim = hyper_params.get("feat_dim", 128)
+        self.first_conv = hyper_params.get("first_conv", True)
+        self.maxpool1 = hyper_params.get("maxpool1", True)
 
-        self.optim = optimizer
-        self.lars_wrapper = lars_wrapper
-        self.exclude_bn_bias = exclude_bn_bias
-        self.weight_decay = weight_decay
-        self.temperature = temperature
+        self.optim = hyper_params.get("optimizer", "adam")
+        self.lars_wrapper = hyper_params.get("lars_wrapper", True)
+        self.exclude_bn_bias = hyper_params.get("exclude_bn_bias", False)
+        self.weight_decay = hyper_params.get("weight_decay", 1e-6)
+        self.temperature = hyper_params.get("temperature", 0.1)
 
-        self.start_lr = start_lr
-        self.final_lr = final_lr
-        self.learning_rate = learning_rate
-        self.warmup_epochs = warmup_epochs
-        self.max_epochs = max_epochs
+        self.start_lr = hyper_params.get("start_lr", 0.)
+        self.final_lr = hyper_params.get("final_lr", 1e-6)
+        self.learning_rate = hyper_params.get("learning_rate", 1e-3)
+        self.warmup_epochs = hyper_params.get("warmup_epochs", 10)
+        self.max_epochs = hyper_params.get("max_epochs", 100)
 
         self.init_model()
 
         # compute iters per epoch
-        nb_gpus = len(self.gpus) if isinstance(gpus, (list, tuple)) else self.gpus
+        nb_gpus = len(self.gpus) if isinstance(self.gpus, (list, tuple)) else self.gpus
         assert isinstance(nb_gpus, int)
         global_batch_size = self.num_nodes * nb_gpus * self.batch_size if nb_gpus > 0 else self.batch_size
         self.train_iters_per_epoch = self.num_samples // global_batch_size
@@ -148,10 +70,10 @@ class SimSiam(pl.LightningModule):
         self.lr_schedule = np.concatenate((warmup_lr_schedule, cosine_lr_schedule))
 
     def init_model(self):
-        if self.arch == 'resnet18':
+        assert self.backbone in ["resnet18", "resnet50"]
+        if self.backbone == "resnet18":
             backbone = resnet18
         else:
-            assert self.arch == 'resnet50'
             backbone = resnet50
 
         encoder = backbone(first_conv=self.first_conv, maxpool1=self.maxpool1, return_all_feature_maps=False)
@@ -179,7 +101,7 @@ class SimSiam(pl.LightningModule):
         loss = self.cosine_similarity(h1, z2) / 2 + self.cosine_similarity(h2, z1) / 2
 
         # log results
-        self.log_dict({"loss": loss})
+        self.log("train_loss", loss)
 
         return loss
 
@@ -192,7 +114,7 @@ class SimSiam(pl.LightningModule):
         loss = self.cosine_similarity(h1, z2) / 2 + self.cosine_similarity(h2, z1) / 2
 
         # log results
-        self.log_dict({"loss": loss})
+        self.log("val_loss", loss)
 
         return loss
 
@@ -271,38 +193,3 @@ class SimSiam(pl.LightningModule):
             optimizer.step()
         else:
             optimizer.step(closure=optimizer_closure)
-
-    @staticmethod
-    def add_model_specific_args(parent_parser):
-        parser = argparse.ArgumentParser(parents=[parent_parser], add_help=False)
-        # model params
-        parser.add_argument("--arch", default="resnet50", type=str, help="convnet architecture")
-        # specify flags to store false
-        parser.add_argument("--first_conv", action="store_false")
-        parser.add_argument("--maxpool1", action="store_false")
-        parser.add_argument("--hidden_mlp", default=2048, type=int, help="hidden layer dimension in projection head")
-        parser.add_argument("--feat_dim", default=128, type=int, help="feature dimension")
-        parser.add_argument("--online_ft", action="store_true")
-        parser.add_argument("--fp32", action="store_true")
-
-        # transform params
-        parser.add_argument("--gaussian_blur", action="store_true", help="add gaussian blur")
-        parser.add_argument("--jitter_strength", type=float, default=1.0, help="jitter strength")
-        parser.add_argument("--dataset", type=str, default="cifar10", help="stl10, cifar10")
-        parser.add_argument("--data_dir", type=str, default=".", help="path to download data")
-
-        # training params
-        parser.add_argument("--num_workers", default=2, type=int, help="num of workers per GPU")
-        parser.add_argument("--optimizer", default="adam", type=str, help="choose between adam/sgd")
-        parser.add_argument("--lars_wrapper", action="store_true", help="apple lars wrapper over optimizer used")
-        parser.add_argument("--exclude_bn_bias", action="store_true", help="exclude bn/bias from weight decay")
-        parser.add_argument("--warmup_epochs", default=10, type=int, help="number of warmup epochs")
-        parser.add_argument("--batch_size", default=128, type=int, help="batch size per gpu")
-
-        parser.add_argument("--temperature", default=0.1, type=float, help="temperature parameter in training loss")
-        parser.add_argument("--weight_decay", default=1e-6, type=float, help="weight decay")
-        parser.add_argument("--learning_rate", default=1e-3, type=float, help="base learning rate")
-        parser.add_argument("--start_lr", default=0, type=float, help="initial warmup learning rate")
-        parser.add_argument("--final_lr", type=float, default=1e-6, help="final learning rate")
-
-        return parser

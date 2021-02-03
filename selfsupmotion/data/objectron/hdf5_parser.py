@@ -263,7 +263,7 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
         loader = torch.utils.data.DataLoader(
             dataset_train if train else dataset_valid,
             batch_size=self.batch_size,
-            shuffle=self.shuffle,
+            shuffle=self.shuffle,  # @@@@ should we force-shuffle the train set?
             num_workers=self.num_workers,
             drop_last=self.drop_last,
             pin_memory=self.pin_memory
