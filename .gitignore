@@ -1,5 +1,6 @@
 .idea
 mlruns
+lightning_logs
 
 # Ignore example outputs
 examples/*/output/

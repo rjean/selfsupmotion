@@ -2,7 +2,7 @@ import logging
 import torch
 from torch import optim
 
-from selfsupmotion.models.my_model import MyModel
+from selfsupmotion.models.simsiam import SimSiam
 
 logger = logging.getLogger(__name__)
 
@@ -18,13 +18,13 @@ def load_model(hyper_params):  # pragma: no cover
     """
     architecture = hyper_params['architecture']
     # __TODO__ fix architecture list
-    if architecture == 'my_model':
-        model_class = MyModel
+    if architecture == 'simsiam':
+        model_class = SimSiam
     else:
         raise ValueError('architecture {} not supported'.format(architecture))
     logger.info('selected architecture: {}'.format(architecture))
 
-    model = model_class(hyper_params)
+    model = model_class(**hyper_params)
     logger.info('model info:\n' + str(model) + '\n')
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     logger.info('using device {}'.format(device))

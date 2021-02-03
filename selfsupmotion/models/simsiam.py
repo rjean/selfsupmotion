@@ -1,12 +1,11 @@
 import argparse
+import logging
 import math
-import os
 import typing
 
 import numpy as np
 import pytorch_lightning as pl
 import torch
-from pytorch_lightning import seed_everything
 from pytorch_lightning.utilities import AMPType
 from torch.nn import functional as F
 from torch.optim.optimizer import Optimizer
@@ -14,13 +13,8 @@ from torch.optim.optimizer import Optimizer
 from pl_bolts.models.self_supervised.resnets import resnet18, resnet50
 from pl_bolts.models.self_supervised.simsiam.models import SiameseArm
 from pl_bolts.optimizers.lars_scheduling import LARSWrapper
-from pl_bolts.transforms.dataset_normalizations import (
-    cifar10_normalization,
-    imagenet_normalization,
-    stl10_normalization,
-)
 
-import selfsupmotion.data.objectron.hdf5_parser
+logger = logging.getLogger(__name__)
 
 
 class SimSiam(pl.LightningModule):
@@ -156,7 +150,8 @@ class SimSiam(pl.LightningModule):
     def init_model(self):
         if self.arch == 'resnet18':
             backbone = resnet18
-        elif self.arch == 'resnet50':
+        else:
+            assert self.arch == 'resnet50'
             backbone = resnet50
 
         encoder = backbone(first_conv=self.first_conv, maxpool1=self.maxpool1, return_all_feature_maps=False)
@@ -311,145 +306,3 @@ class SimSiam(pl.LightningModule):
         parser.add_argument("--final_lr", type=float, default=1e-6, help="final learning rate")
 
         return parser
-
-
-def cli_main():
-    from pl_bolts.callbacks.ssl_online import SSLOnlineEvaluator
-    from pl_bolts.datamodules import CIFAR10DataModule, ImagenetDataModule, STL10DataModule
-    from pl_bolts.models.self_supervised.simclr import SimCLREvalDataTransform, SimCLRTrainDataTransform
-
-    seed_everything(1234)
-
-    parser = argparse.ArgumentParser()
-
-    # trainer args
-    parser = pl.Trainer.add_argparse_args(parser)
-
-    # model args
-    parser = SimSiam.add_model_specific_args(parser)
-    args = parser.parse_args()
-
-    # pick data
-    dm = None
-
-    # init datamodule
-    if args.dataset == "stl10":
-        dm = STL10DataModule(data_dir=args.data_dir, batch_size=args.batch_size, num_workers=args.num_workers)
-
-        dm.train_dataloader = dm.train_dataloader_mixed
-        dm.val_dataloader = dm.val_dataloader_mixed
-        args.num_samples = dm.num_unlabeled_samples
-
-        args.maxpool1 = False
-        args.first_conv = True
-        args.input_height = dm.size()[-1]
-
-        normalization = stl10_normalization()
-
-        args.gaussian_blur = True
-        args.jitter_strength = 1.0
-    elif args.dataset == "cifar10":
-        val_split = 5000
-        if args.num_nodes * args.gpus * args.batch_size > val_split:
-            val_split = args.num_nodes * args.gpus * args.batch_size
-
-        dm = CIFAR10DataModule(
-            data_dir=args.data_dir,
-            batch_size=args.batch_size,
-            num_workers=args.num_workers,
-            val_split=val_split,
-        )
-
-        args.num_samples = dm.num_samples
-
-        args.maxpool1 = False
-        args.first_conv = False
-        args.input_height = dm.size()[-1]
-        args.temperature = 0.5
-
-        normalization = cifar10_normalization()
-
-        args.gaussian_blur = False
-        args.jitter_strength = 0.5
-    elif args.dataset == "imagenet":
-        args.maxpool1 = True
-        args.first_conv = True
-        normalization = imagenet_normalization()
-
-        args.gaussian_blur = True
-        args.jitter_strength = 1.0
-
-        args.batch_size = 64
-        args.num_nodes = 8
-        args.gpus = 8  # per-node
-        args.max_epochs = 800
-
-        args.optimizer = "sgd"
-        args.lars_wrapper = True
-        args.learning_rate = 4.8
-        args.final_lr = 0.0048
-        args.start_lr = 0.3
-        args.online_ft = True
-
-        dm = ImagenetDataModule(data_dir=args.data_dir, batch_size=args.batch_size, num_workers=args.num_workers)
-
-        args.num_samples = dm.num_samples
-        args.input_height = dm.size()[-1]
-    elif args.dataset == "objectron":
-        args.maxpool1 = True
-        args.first_conv = True
-        args.input_height = 224
-        args.gaussian_blur = True
-        args.jitter_strength = 1.0
-        dm = selfsupmotion.data.objectron.hdf5_parser.ObjectronFramePairDataModule(
-            hdf5_path=os.path.join(args.data_dir, "objectron/extract_s5_raw.hdf5"),
-            input_height=args.input_height,
-            gaussian_blur=args.gaussian_blur,
-            jitter_strength=args.jitter_strength,
-            batch_size=args.batch_size,
-            num_workers=args.num_workers,
-        )
-        args.num_samples = dm.train_sample_count
-
-    else:
-        raise NotImplementedError("other datasets have not been implemented till now")
-
-    if args.dataset != "objectron":
-        dm.train_transforms = SimCLRTrainDataTransform(
-            input_height=args.input_height,
-            gaussian_blur=args.gaussian_blur,
-            jitter_strength=args.jitter_strength,
-            normalize=normalization,
-        )
-        dm.val_transforms = SimCLREvalDataTransform(
-            input_height=args.input_height,
-            gaussian_blur=args.gaussian_blur,
-            jitter_strength=args.jitter_strength,
-            normalize=normalization,
-        )
-
-    model = SimSiam(**args.__dict__)
-
-    # finetune in real-time
-    online_evaluator = None
-    if args.online_ft:
-        # online eval
-        online_evaluator = SSLOnlineEvaluator(
-            drop_p=0.0,
-            hidden_dim=None,
-            z_dim=args.hidden_mlp,
-            num_classes=dm.num_classes,
-            dataset=args.dataset,
-        )
-
-    trainer = pl.Trainer.from_argparse_args(
-        args,
-        sync_batchnorm=True if args.gpus > 1 else False,
-        callbacks=[online_evaluator] if args.online_ft else None,
-    )
-
-    trainer.fit(model, datamodule=dm)
-
-
-if __name__ == "__main__":
-    cli_main()
