@@ -3,6 +3,7 @@
 import argparse
 import logging
 import os
+import shutil
 import sys
 import yaml
 
@@ -81,18 +82,15 @@ def main():
     sys.stdout = LoggerWriter(logger.info)
     sys.stderr = LoggerWriter(logger.warning)
 
-    if args.config is not None:
-        with open(args.config, 'r') as stream:
-            hyper_params = load(stream, Loader=yaml.FullLoader)
-    else:
-        hyper_params = {}
-
-    # to be done as soon as possible otherwise mlflow will not log with the proper exp. name
-    mlf_logger = MLFlowLogger(
-        experiment_name=hyper_params.get('exp_name', 'Default')
-    )
+    assert args.config is not None
+    with open(args.config, 'r') as stream:
+        hyper_params = load(stream, Loader=yaml.FullLoader)
+    exp_name = hyper_params["exp_name"]
+    output_dir = os.path.join(output_dir, exp_name)
+    os.makedirs(output_dir, exist_ok=True)
+    shutil.copyfile(args.config, os.path.join(output_dir, "config.backup"))
+    mlf_logger = MLFlowLogger(experiment_name=exp_name)
     run(args, data_dir, output_dir, hyper_params, mlf_logger)
-
     if args.tmp_folder is not None:
         rsync_folder(output_dir + os.path.sep, args.output)
 
