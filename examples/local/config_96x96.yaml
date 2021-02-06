@@ -1,0 +1,16 @@
+batch_size: 512
+optimizer: sgd
+learning_rate: 0.03
+weight_decay: 0.0005
+lars_wrapper: False
+temperature: 0.1
+architecture: simsiam
+backbone: resnet18
+hidden_mlp: 512
+feat_dim: 128
+patience: 5
+max_epoch: 50
+exp_name: my_exp_1
+gpus: 1
+num_workers: 16
+seed: None

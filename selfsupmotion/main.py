@@ -19,6 +19,7 @@ from selfsupmotion.utils.logging_utils import LoggerWriter, log_exp_details
 from selfsupmotion.utils.reproducibility_utils import set_seed
 
 import selfsupmotion.data.objectron.hdf5_parser
+import selfsupmotion.data.objectron.file_datamodule
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,7 @@ def main():
                         help='config file with generic hyper-parameters,  such as optimizer, '
                              'batch_size, ... -  in yaml format')
     parser.add_argument('--data', help='path to data', required=True)
+    parser.add_argument('--data-module', default="hdf5", help="Data module to use. file or hdf5")
     parser.add_argument('--tmp-folder',
                         help='will use this folder as working folder - it will copy the input data '
                              'here, generate results here, and then copy them back to the output '
@@ -119,14 +121,20 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger):
 
     if not data_dir.endswith(".hdf5"):
         data_dir = os.path.join(data_dir, "extract_s5_raw.hdf5")
-    dm = selfsupmotion.data.objectron.hdf5_parser.ObjectronFramePairDataModule(
-        hdf5_path=data_dir,
-        input_height=hyper_params.get("input_height", 224),
-        gaussian_blur=hyper_params.get("gaussian_blur", True),
-        jitter_strength=hyper_params.get("jitter_strength", 1.0),
-        batch_size=hyper_params["batch_size"],
-        num_workers=hyper_params["num_workers"],
-    )
+    if args.data_module=="hdf5":
+        dm = selfsupmotion.data.objectron.hdf5_parser.ObjectronFramePairDataModule(
+            hdf5_path=data_dir,
+            input_height=hyper_params.get("input_height", 224),
+            gaussian_blur=hyper_params.get("gaussian_blur", True),
+            jitter_strength=hyper_params.get("jitter_strength", 1.0),
+            batch_size=hyper_params["batch_size"],
+            num_workers=hyper_params["num_workers"],
+        )
+    elif args.data_module=="file":
+        dm = selfsupmotion.data.objectron.file_datamodule.ObjectronFileDataModule(num_workers=hyper_params["num_workers"],batch_size=hyper_params["batch_size"] )
+        dm.setup() #In order to have the sample count.
+    else:
+        raise ValueError(f"Invalid datamodule specified on CLU : {args.data_module}")
     if "num_samples" not in hyper_params:
         # the model impl uses the sample count to prepare scheduled LR values in advance
         hyper_params["num_samples"] = dm.train_sample_count

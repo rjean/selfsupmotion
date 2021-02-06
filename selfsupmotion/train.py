@@ -52,7 +52,9 @@ def load_stats(output):
 
 def train(**kwargs):  # pragma: no cover
     """Training loop wrapper. Used to catch exception if Orion is being used."""
+    best_dev_metric = train_impl(**kwargs)
     try:
+        pass
         best_dev_metric = train_impl(**kwargs)
     except RuntimeError as err:
         if orion.client.IS_ORION_ON and 'CUDA out of memory' in str(err):

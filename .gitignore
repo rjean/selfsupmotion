@@ -4,7 +4,7 @@ lightning_logs
 
 # Ignore example outputs
 examples/*/output/
-
+datasets/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
