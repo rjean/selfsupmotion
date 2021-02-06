@@ -410,15 +410,17 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
             jitter_strength=self.jitter_strength,
         )
 
+from tqdm import tqdm
+
 if __name__ == "__main__":
     print("Data Module for Objectron 'File-Based'")
-    dm = ObjectronFileDataModule()
+    dm = ObjectronFileDataModule(num_workers=8)
     dm.setup()
-    for batch in dm.train_dataloader():
-        images, meta = batch
-        images1, images2 = images
+    for batch in tqdm(dm.train_dataloader(), total=int(len(dm.train_dataset)/dm.batch_size)):
+        images, y = batch
+        images1, images2, meta = images
         assert images1.shape==images2.shape
-        assert images2.shape==torch.Size([512,3,96,96])
-        print("Train loader ok")
+        assert images2.shape[1:4]==torch.Size([3,96,96])
+        #print("Train loader ok")
         
     
