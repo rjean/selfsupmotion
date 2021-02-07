@@ -30,7 +30,7 @@ class SimSiamFramePairTrainDataTransform(object):
     """
 
     @staticmethod
-    def _generate_obj_crops(sample: typing.Dict, crop_height: int):
+    def _generate_obj_crops(sample: typing.Dict, crop_height: typing.Union[int, str]):
         """
         This operation will crop all frames in a sequence based on the object center location
         in the first frame. This will allow the model to perceive some of the camera movement.
@@ -39,29 +39,48 @@ class SimSiamFramePairTrainDataTransform(object):
         assert len(sample["IMAGE"].shape) == 4 and sample["IMAGE"].shape[1:] == (640, 480, 3)
         assert len(sample["CENTROID_2D_IM"].shape) == 2 and sample["CENTROID_2D_IM"].shape[-1] == 2
         # get top-left/bottom-right coords for object of interest in first frame (0-th index)
-        tl = (int(round(sample["CENTROID_2D_IM"][0, 0] - crop_height / 2)),
-              int(round(sample["CENTROID_2D_IM"][0, 1] - crop_height / 2)))
-        br = (tl[0] + crop_height, tl[1] + crop_height)
+        if isinstance(crop_height, int):
+            tl = (int(round(sample["CENTROID_2D_IM"][0, 0] - crop_height / 2)),
+                  int(round(sample["CENTROID_2D_IM"][0, 1] - crop_height / 2)))
+            br = (tl[0] + crop_height, tl[1] + crop_height)
+        else:
+            assert crop_height == "auto", "unexpected crop height arg"
+            base_pts = np.asarray([pt for pt in sample["POINTS"][0]])
+            real_tl = (base_pts[:, 0].min(), base_pts[:, 1].min())
+            real_br = (base_pts[:, 0].max(), base_pts[:, 1].max())
+            max_size = max(real_br[0] - real_tl[0], real_br[1] - real_tl[1]) * 1.2  # 20% extra
+            tl = (int(round(sample["CENTROID_2D_IM"][0, 0] - max_size / 2)),
+                  int(round(sample["CENTROID_2D_IM"][0, 1] - max_size / 2)))
+            br = (int(round(tl[0] + max_size)), int(round(tl[1] + max_size)))
         # get crops one at a time for all frames in the seq, for all seqs in the minibatch
         output_crop_seq = []
-        for frame_idx, frame in enumerate(sample["IMAGE"]):
+        output_keypoints = []
+        for frame_idx, (frame, kpts) in enumerate(zip(sample["IMAGE"], sample["POINTS"])):
             if thelper_available:
                 crop = thelper.draw.safe_crop(image=frame, tl=tl, br=br)
             else:
                 crop = selfsupmotion.data.utils.safe_crop(image=frame, tl=tl, br=br)
             output_crop_seq.append(crop)
+            if "POINTS" in sample:
+                offset_coords = (tl[0], tl[1], 0, 0)
+                output_keypoints.append(np.subtract(sample["POINTS"][frame_idx], offset_coords))
         assert "OBJ_CROPS" not in sample
         sample["OBJ_CROPS"] = output_crop_seq
+        if output_keypoints:
+            sample["POINTS"] = output_keypoints
         return sample
 
     def __init__(
             self,
-            crop_height: int = 320,
+            crop_height: typing.Union[int, typing.AnyStr] = 320,
             input_height: int = 224,
             gaussian_blur: bool = True,
             jitter_strength: float = 1.,
             seed_wrap_augments: bool = False,
             use_hflip_augment: bool = False,
+            drop_orig_image: bool = True,
+            crop_scale: typing.Tuple[float, float] = (0.4, 1.0),
+            crop_ratio: typing.Tuple[float, float] = (1.0, 1.0),
     ) -> None:
         self.crop_height = crop_height
         self.input_height = input_height
@@ -69,13 +88,16 @@ class SimSiamFramePairTrainDataTransform(object):
         self.jitter_strength = jitter_strength
         self.seed_wrap_augments = seed_wrap_augments
         self.use_hflip_augment = use_hflip_augment
+        self.drop_orig_image = drop_orig_image
 
-        augment_transforms = [albumentations.RandomResizedCrop(
-            height=self.input_height,
-            width=self.input_height,
-            scale=(0.4, 1.0),  # @@@@ adjust if needed?
-            ratio=(1.0, 1.0),  # @@@@ adjust if needed?
-        )]
+        augment_transforms = [
+            albumentations.RandomResizedCrop(
+                height=self.input_height,
+                width=self.input_height,
+                scale=crop_scale,
+                ratio=crop_ratio,
+            ),
+        ]
         if use_hflip_augment:
             augment_transforms.append(albumentations.HorizontalFlip(p=0.5))
         augment_transforms.extend([
@@ -125,22 +147,33 @@ class SimSiamFramePairTrainDataTransform(object):
         ])
 
     def __call__(self, sample):
+        assert isinstance(sample, dict)
         # first, add the object crops to the sample dict
         sample = self._generate_obj_crops(sample, self.crop_height)
         # now, for each crop, apply the seeded transform list
-        output_crops = []
+        output_crops, output_keypoints = [], []
         shared_seed = np.random.randint(np.iinfo(np.int32).max)
         for crop_idx in range(len(sample["OBJ_CROPS"])):
             np.random.seed(shared_seed)  # the wrappers will use numpy to re-seed themselves internally
             if self.seed_wrap_augments:
+                assert "POINTS" not in sample, "missing impl"
                 aug_crop = self.augment_transform(sample["OBJ_CROPS"][crop_idx])
             else:
-                aug_crop = self.augment_transform(image=sample["OBJ_CROPS"][crop_idx])
+                aug_crop = self.augment_transform(
+                    image=sample["OBJ_CROPS"][crop_idx],
+                    keypoints=sample["POINTS"][crop_idx],
+                    # the "xy" format somehow breaks when we have 2-coord kpts, this is why we pad to 4...
+                    keypoint_params=albumentations.KeypointParams(format="xysa", remove_invisible=False),
+                )
+                output_keypoints.append(aug_crop["keypoints"])
             output_crops.append(self.convert_transform(PIL.Image.fromarray(aug_crop["image"])))
-        # finally, add the 'transformed global view' (??)
-        aug_global_crop = self.online_augment_transform(image=sample["OBJ_CROPS"][0])
-        output_crops.append(self.convert_transform(PIL.Image.fromarray(aug_global_crop["image"])))
-        return output_crops
+        sample["OBJ_CROPS"] = output_crops
+        # finally, scrap the dumb padding around the 2d keypoints
+        sample["POINTS"] = [pts for pts in np.asarray(output_keypoints)[..., :2]]
+        if self.drop_orig_image:
+            del sample["IMAGE"]
+            del sample["CENTROID_2D_IM"]
+        return sample
 
 
 class SimSiamFramePairEvalDataTransform(SimSiamFramePairTrainDataTransform):
@@ -155,19 +188,8 @@ class SimSiamFramePairEvalDataTransform(SimSiamFramePairTrainDataTransform):
     (note: the transform list is copied and adapted from the SimCLR transforms)
     """
 
-    def __init__(
-            self,
-            crop_height: int = 320,
-            input_height: int = 224,
-            gaussian_blur: bool = True,
-            jitter_strength: float = 1.,
-    ):
-        super().__init__(
-            crop_height=crop_height,
-            input_height=input_height,
-            gaussian_blur=gaussian_blur,
-            jitter_strength=jitter_strength
-        )
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
 
         # replace online transform with eval time transform
         adjusted_precrop_size = int(self.input_height + 0.1 * self.input_height)
