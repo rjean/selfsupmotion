@@ -117,6 +117,9 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger):
     if hyper_params["seed"] is not None:
         set_seed(hyper_params["seed"])
 
+    if "precision" not in hyper_params:
+        hyper_params["precision"]=16
+
     log_exp_details(os.path.realpath(__file__), args)
 
     if not data_dir.endswith(".hdf5"):
@@ -129,6 +132,7 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger):
             jitter_strength=hyper_params.get("jitter_strength", 1.0),
             batch_size=hyper_params["batch_size"],
             num_workers=hyper_params["num_workers"],
+            precision=hyper_params["precision"]
         )
     elif args.data_module=="file":
         dm = selfsupmotion.data.objectron.file_datamodule.ObjectronFileDataModule(num_workers=hyper_params["num_workers"],batch_size=hyper_params["batch_size"] )
@@ -147,7 +151,7 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger):
     train(model=model, optimizer=None, loss_fun=None, datamodule=dm,
           patience=hyper_params['patience'], output=output_dir,
           max_epoch=hyper_params['max_epoch'], use_progress_bar=not args.disable_progressbar,
-          start_from_scratch=args.start_from_scratch, mlf_logger=mlf_logger)
+          start_from_scratch=args.start_from_scratch, mlf_logger=mlf_logger, precision=hyper_params["precision"])
 
 
 if __name__ == '__main__':
