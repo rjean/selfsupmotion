@@ -114,7 +114,7 @@ class SimSiam(pl.LightningModule):
         loss = self.cosine_similarity(h1, z2) / 2 + self.cosine_similarity(h2, z1) / 2
 
         base = batch_idx*self.batch_size
-        train_features= F.normalize(z1, dim=1)
+        train_features= F.normalize(z1, dim=1).detach().cpu()
         self.train_meta+=meta
         self.train_features[base:base+len(img_1)]=train_features
         self.train_targets[base:base+len(img_1)]=y
@@ -134,9 +134,9 @@ class SimSiam(pl.LightningModule):
         self.valid_meta+=meta
         base = batch_idx*self.batch_size
 
-        valid_features = F.normalize(z1, dim=1)
+        valid_features = F.normalize(z1, dim=1).detach().cpu()
 
-        similarity = torch.mm(valid_features, self.train_features.cuda().T)
+        similarity = torch.mm(valid_features, self.train_features.T)
         targets_idx= torch.argmax(similarity,axis=1)
         neighbor_targets = self.train_targets[targets_idx]
         match_count = (neighbor_targets==y.cpu()).sum()
