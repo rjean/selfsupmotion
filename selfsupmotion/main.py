@@ -121,6 +121,9 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger):
         data_dir = os.path.join(data_dir, "extract_s5_raw.hdf5")
     dm = selfsupmotion.data.objectron.hdf5_parser.ObjectronFramePairDataModule(
         hdf5_path=data_dir,
+        tuple_length=hyper_params.get("tuple_length", 2),
+        frame_offset=hyper_params.get("frame_offset", 1),
+        tuple_offset=hyper_params.get("tuple_offset", 2),
         input_height=hyper_params.get("input_height", 224),
         gaussian_blur=hyper_params.get("gaussian_blur", True),
         jitter_strength=hyper_params.get("jitter_strength", 1.0),

@@ -8,9 +8,13 @@ architecture: simsiam
 backbone: resnet50
 hidden_mlp: 2048
 feat_dim: 128
+input_height: 224
+tuple_length: 2
+frame_offset: 1
+tuple_offset: 2
 patience: 5
 max_epoch: 100
-exp_name: my_exp_1
+exp_name: temp
 gpus: 1
 num_workers: 2
 seed: None

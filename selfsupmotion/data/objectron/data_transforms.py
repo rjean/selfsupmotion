@@ -169,7 +169,7 @@ class SimSiamFramePairTrainDataTransform(object):
             output_crops.append(self.convert_transform(PIL.Image.fromarray(aug_crop["image"])))
         sample["OBJ_CROPS"] = output_crops
         # finally, scrap the dumb padding around the 2d keypoints
-        sample["POINTS"] = [pts for pts in np.asarray(output_keypoints)[..., :2]]
+        sample["POINTS"] = [pts for pts in np.asarray(output_keypoints)[..., :2].astype(np.float32)]
         if self.drop_orig_image:
             del sample["IMAGE"]
             del sample["CENTROID_2D_IM"]
