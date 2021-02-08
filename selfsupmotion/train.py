@@ -112,7 +112,8 @@ def train_impl(
         max_epoch,
         use_progress_bar,
         start_from_scratch,
-        mlf_logger
+        mlf_logger,
+        precision
 ):  # pragma: no cover
     """Main training loop implementation.
 
@@ -167,6 +168,8 @@ def train_impl(
         resume_from_checkpoint=resume_from_checkpoint,
         gpus=torch.cuda.device_count(),
         auto_select_gpus=True,
+        precision=precision,
+        amp_level="O1",
         accelerator=None,  # @@@@@@@@@ TODO CHECK ME OUT w/ precision arg too
     )
 
