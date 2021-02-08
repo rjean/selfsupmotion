@@ -10,7 +10,7 @@ hidden_mlp: 512
 feat_dim: 128
 patience: 5
 max_epoch: 50
-exp_name: my_exp_1
+exp_name: simsiam_96x96_test
 gpus: 1
 num_workers: 16
 seed: None
