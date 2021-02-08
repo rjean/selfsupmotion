@@ -264,11 +264,12 @@ class ObjectronFileDataModule(pytorch_lightning.LightningDataModule):
     
     def setup(self, stage=None):
         if not self.issetup:
-            train_transform = self.get_objectron_transform(self.image_size)
-            eval_transform = self.get_objectron_transform(self.image_size, evaluation=True)
-            self.train_dataset = ObjectronDataset(OBJECTRON_PATH,split="train", transform=train_transform)
-            self.val_dataset = ObjectronDataset(OBJECTRON_PATH, split="valid", transform=eval_transform)
-            self.test_dataset = ObjectronDataset(OBJECTRON_PATH, split="test", transform=eval_transform)
+            self.train_transform = self.get_objectron_transform(self.image_size)
+            self.eval_transform = self.get_objectron_transform(self.image_size, evaluation=True)
+            self.train_dataset = ObjectronDataset(OBJECTRON_PATH,split="train", transform=self.train_transform)
+            #self.train_eval_dataset = ObjectronDataset(OBJECTRON_PATH,split="train", transform=eval_transform)
+            self.val_dataset = ObjectronDataset(OBJECTRON_PATH, split="valid", transform=self.eval_transform)
+            self.test_dataset = ObjectronDataset(OBJECTRON_PATH, split="test", transform=self.eval_transform)
             self.train_sample_count = len(self.train_dataset)
             self.issetup=True
     
@@ -290,7 +291,10 @@ class ObjectronFileDataModule(pytorch_lightning.LightningDataModule):
                 T.ToTensor(),
                 T.Normalize(*mean_std)
             ])
-    def train_dataloader(self) -> DataLoader:
+    def train_dataloader(self, evaluation=False) -> DataLoader:
+        self.train_dataset.transform=self.train_transform
+        if evaluation:
+            self.train_dataset.transform = self.eval_transform
         return DataLoader(self.train_dataset, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=True)
     
     def val_dataloader(self) -> DataLoader:
@@ -299,116 +303,6 @@ class ObjectronFileDataModule(pytorch_lightning.LightningDataModule):
     def test_dataloader(self) -> DataLoader:
         return DataLoader(self.test_dataset, batch_size=self.batch_size, num_workers=self.num_workers)
     
-
-class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
-
-    name = "objectron_fp"
-
-    def __init__(
-            self,
-            hdf5_path: typing.AnyStr,
-            objects: typing.Optional[typing.Sequence[typing.AnyStr]] = None,  # default => use all
-            tuple_length: int = 2,
-            frame_offset: int = 1,
-            tuple_offset: int = 2,
-            input_height: int = 224,
-            gaussian_blur: bool = True,
-            jitter_strength: float = 1.0,
-            valid_split_ratio: float = 0.1,
-            num_workers: int = 8,
-            batch_size: int = 256,
-            seed: int = 1337,
-            shuffle: bool = False,
-            pin_memory: bool = False,
-            drop_last: bool = False,
-            *args: typing.Any,
-            **kwargs: typing.Any,
-    ):
-        super().__init__(*args, **kwargs)
-        self.image_size = input_height
-        self.dims = (3, input_height, input_height)
-        self.gaussian_blur = gaussian_blur
-        self.jitter_strength = jitter_strength
-        self.valid_split_ratio = valid_split_ratio
-        self.hdf5_path = hdf5_path
-        self.objects = objects
-        self.tuple_length = tuple_length
-        self.frame_offset = frame_offset
-        self.tuple_offset = tuple_offset
-        self.num_workers = num_workers
-        self.batch_size = batch_size
-        self.seed = seed
-        self.shuffle = shuffle
-        self.pin_memory = pin_memory
-        self.drop_last = drop_last
-        # create temp dataset to get sample count
-        dataset = ObjectronHDF5FrameTupleParser(
-            hdf5_path=self.hdf5_path,
-            objects=self.objects,
-            tuple_length=self.tuple_length,
-            frame_offset=self.frame_offset,
-            tuple_offset=self.tuple_offset,
-        )
-        # note: split below is not ideal for current frame-pair parser, it leaks across sequences
-        self.valid_sample_count = int(len(dataset) * self.valid_split_ratio)
-        self.train_sample_count = len(dataset) - self.valid_sample_count
-        assert self.train_sample_count > 0 and self.valid_sample_count > 0
-
-    def _create_dataloader(
-            self,
-            train: bool = True,
-            transforms: typing.Optional[typing.Any] = None,
-    ) -> torch.utils.data.DataLoader:
-        # @@@@ TODO: transforms should be passed to the dataset parser
-        dataset = ObjectronHDF5FrameTupleParser(
-            hdf5_path=self.hdf5_path,
-            objects=self.objects,
-            tuple_length=self.tuple_length,
-            frame_offset=self.frame_offset,
-            tuple_offset=self.tuple_offset,
-            _target_fields=["IMAGE", "CENTROID_2D_IM"],
-            _transforms=transforms,
-        )
-        # note: split below is not ideal for current frame-pair parser, it leaks across sequences
-        dataset_train, dataset_valid = torch.utils.data.random_split(
-            dataset, [self.train_sample_count, self.valid_sample_count],
-            generator=torch.Generator().manual_seed(self.seed)
-        )
-        loader = torch.utils.data.DataLoader(
-            dataset_train if train else dataset_valid,
-            batch_size=self.batch_size,
-            shuffle=self.shuffle,  # @@@@ should we force-shuffle the train set?
-            num_workers=self.num_workers,
-            drop_last=self.drop_last,
-            pin_memory=self.pin_memory
-        )
-        return loader
-
-    def train_dataloader(self) -> torch.utils.data.DataLoader:
-        return self._create_dataloader(
-            train=True,
-            transforms=self.train_transform() if self.train_transforms is None else self.train_transforms,
-        )
-
-    def val_dataloader(self) -> torch.utils.data.DataLoader:
-        return self._create_dataloader(
-            train=False,
-            transforms=self.val_transform() if self.val_transforms is None else self.val_transforms,
-        )
-
-    def train_transform(self):
-        return selfsupmotion.data.objectron.data_transforms.SimSiamFramePairTrainDataTransform(
-            input_height=self.image_size,
-            gaussian_blur=self.gaussian_blur,
-            jitter_strength=self.jitter_strength,
-        )
-
-    def val_transform(self):
-        return selfsupmotion.data.objectron.data_transforms.SimSiamFramePairEvalDataTransform(
-            input_height=self.image_size,
-            gaussian_blur=self.gaussian_blur,
-            jitter_strength=self.jitter_strength,
-        )
 
 from tqdm import tqdm
 

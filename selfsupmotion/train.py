@@ -159,6 +159,7 @@ def train_impl(
 
     early_stopping = EarlyStopping("val_loss", mode="auto", patience=patience,
                                    verbose=use_progress_bar)
+    
     trainer = pl.Trainer(
         # @@@@@@@@@@@ TODO check if we can add an online evaluator w/ callback
         callbacks=[early_stopping, best_checkpoint_callback, last_checkpoint_callback],
