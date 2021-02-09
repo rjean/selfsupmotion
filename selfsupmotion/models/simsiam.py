@@ -87,11 +87,12 @@ class SimSiam(pl.LightningModule):
         )
         #max_batch = math.ceil(self.num_samples/self.batch_size)
         encoder, projector = self.online_network.encoder, self.online_network.projector
-        self.train_features = torch.zeros((self.num_samples,projector.output_dim))
+        self.train_features = torch.zeros((self.num_samples,projector.input_dim))
         self.train_meta = []
         self.train_targets = -torch.ones((self.num_samples))
-        self.valid_features = torch.zeros((self.num_samples_valid, projector.output_dim))
+        self.valid_features = torch.zeros((self.num_samples_valid, projector.input_dim))
         self.valid_meta = []
+        self.cuda_train_features = None
         
 
     def forward(self, x):
@@ -113,13 +114,15 @@ class SimSiam(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         (img_1, img_2, meta), y = batch
 
+        if self.cuda_train_features is not None:
+            self.cuda_train_features = None #Free GPU memory
         # Image 1 to image 2 loss
-        _, z1, h1 = self.online_network(img_1)
-        _, z2, h2 = self.online_network(img_2)
+        f1, z1, h1 = self.online_network(img_1)
+        f2, z2, h2 = self.online_network(img_2)
         loss = self.cosine_similarity(h1, z2) / 2 + self.cosine_similarity(h2, z1) / 2
 
         base = batch_idx*self.batch_size
-        train_features= F.normalize(z1, dim=1).detach().cpu()
+        train_features= F.normalize(f1.detach(), dim=1).cpu()
         self.train_meta+=meta
         self.train_features[base:base+len(img_1)]=train_features
         self.train_targets[base:base+len(img_1)]=y
@@ -132,17 +135,20 @@ class SimSiam(pl.LightningModule):
         (img_1, img_2, meta), y = batch
 
         # Image 1 to image 2 loss
-        _, z1, h1 = self.online_network(img_1)
-        _, z2, h2 = self.online_network(img_2)
+        f1, z1, h1 = self.online_network(img_1)
+        f2, z2, h2 = self.online_network(img_2)
+        if self.cuda_train_features is None: #Transfer to GPU once.
+            self.cuda_train_features = self.train_features.cuda()
+
         loss = self.cosine_similarity(h1, z2) / 2 + self.cosine_similarity(h2, z1) / 2
 
         self.valid_meta+=meta
         base = batch_idx*self.batch_size
 
-        valid_features = F.normalize(z1, dim=1).detach().cpu()
+        valid_features = F.normalize(f1, dim=1).detach()
 
-        similarity = torch.mm(valid_features, self.train_features.T)
-        targets_idx= torch.argmax(similarity,axis=1)
+        similarity = torch.mm(valid_features, self.train_features.cuda().T)
+        targets_idx= torch.argmax(similarity,axis=1).cpu()
         neighbor_targets = self.train_targets[targets_idx]
         match_count = (neighbor_targets==y.cpu()).sum()
         accuracy = match_count/len(neighbor_targets)
@@ -184,6 +190,19 @@ class SimSiam(pl.LightningModule):
         else:
             params = self.parameters()
 
+        predictor_prefix = ('encoder')
+        backbone_and_encoder_parameters = [param for name, param in self.online_network.encoder.named_parameters()]
+        backbone_and_encoder_parameters+= [param for name, param in self.online_network.projector.named_parameters()]
+        lr = self.learning_rate
+        params = [{
+            'name': 'base',
+            'params': backbone_and_encoder_parameters,
+            'lr': lr
+            },{
+                'name': 'predictor',
+                'params': [param for name, param in self.online_network.predictor.named_parameters()],
+                'lr': lr
+            }]
         if self.optim == 'sgd':
             optimizer = torch.optim.SGD(params, lr=self.learning_rate, momentum=0.9, weight_decay=self.weight_decay)
         elif self.optim == 'adam':
@@ -216,7 +235,11 @@ class SimSiam(pl.LightningModule):
                 param_group["lr"] = self.lr_schedule[self.trainer.global_step]
         else:
             for param_group in optimizer.param_groups:
-                param_group["lr"] = self.lr_schedule[self.trainer.global_step]
+                if param_group["name"]=="predictor":
+                    param_group["lr"] = self.learning_rate
+                else:
+                    param_group["lr"] = self.lr_schedule[self.trainer.global_step]
+            #param_group[0]["lr"]
 
         # log LR (LearningRateLogger callback doesn't work with LARSWrapper)
         self.log('learning_rate', self.lr_schedule[self.trainer.global_step], on_step=True, on_epoch=False)
