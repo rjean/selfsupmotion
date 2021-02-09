@@ -211,10 +211,11 @@ def generate_embeddings(args, model, datamodule, train=True, image_size=224):
             model.online_network.zero_grad()
             #projector.zero_grad()
             #images1 = resize(images1,image_size)
-            _, z1, h1 = model.online_network(images1)
+            #_, z1, h1 = model.online_network(images1)
             #features= projector(encoder(images1)[0])
-            features = z1
-            
+            #features = z1
+            features = model.online_network.encoder(images1)[0]
+
                 #features=encoder(images)[0]
             features = F.normalize(features, dim=1)
             all_features[:,base:base+len(images1)]=features.t().cpu()
