@@ -98,11 +98,16 @@ class SimSiam(pl.LightningModule):
         y, _, _ = self.online_network(x)
         return y
 
-    def cosine_similarity(self, a, b):
-        b = b.detach()  # stop gradient of backbone + projection mlp
-        a = F.normalize(a, dim=-1)
-        b = F.normalize(b, dim=-1)
-        sim = -1 * (a * b).sum(-1).mean()
+    def cosine_similarity(self, a, b, version="simplified"):
+        if version == "original":
+            b = b.detach()  # stop gradient of backbone + projection mlp
+            a = F.normalize(a, dim=-1)
+            b = F.normalize(b, dim=-1)
+            sim = -1 * (a * b).sum(-1).mean()
+        elif version=="simplified":
+            sim = -F.cosine_similarity(a, b.detach(), dim=-1).mean()
+        else:
+            raise ValueError(f"Unsupported cosine similarity version: {version}")
         return sim
 
     def training_step(self, batch, batch_idx):
