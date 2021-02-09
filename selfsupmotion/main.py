@@ -54,8 +54,10 @@ def main():
     parser.add_argument('--start-from-scratch', action='store_true',
                         help='will not load any existing saved model - even if present')
     parser.add_argument('--debug', action='store_true')
-    parser.add_argument("--embeddings_device",type=str,default="cuda",help="Which device to use for embeddings generation.")
+    parser.add_argument("--embeddings-device",type=str,default="cuda",help="Which device to use for embeddings generation.")
     parser.add_argument('--embeddings', action='store_true',help="Skip training and generate embeddings for evaluation.")
+    parser.add_argument('--embeddings-ckpt', type=str, default=None, help="Checkpoint to load when generating embeddings.")
+    
 
     parser = pl.Trainer.add_argparse_args(parser)
 
@@ -147,7 +149,7 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger):
             pairing=hyper_params["pairing"])
         dm.setup() #In order to have the sample count.
     else:
-        raise ValueError(f"Invalid datamodule specified on CLU : {args.data_module}")
+        raise ValueError(f"Invalid datamodule specified on CLI : {args.data_module}")
     if "num_samples" not in hyper_params:
         # the model impl uses the sample count to prepare scheduled LR values in advance
         hyper_params["num_samples"] = len(dm.train_dataset) #dm.train_sample_count
@@ -158,6 +160,9 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger):
     model = load_model(hyper_params)
 
     if args.embeddings:
+        if args.embeddings_ckpt is None:
+            raise ValueError("Please manually provide the checkpoints using the --embeddings-ckpt argument")
+        model.load_from_checkpoint(args.embeddings_ckpt)
         generate_embeddings(args, model, datamodule=dm,train=True, image_size=hyper_params["image_size"])
         generate_embeddings(args, model, datamodule=dm,train=False, image_size=hyper_params["image_size"])
     else:
@@ -203,10 +208,13 @@ def generate_embeddings(args, model, datamodule, train=True, image_size=224):
             base = batch_num*dataloader.batch_size
 
             #with autocast():
-            encoder.zero_grad()
-            projector.zero_grad()
-            images1 = resize(images1,image_size)
-            features= projector(encoder(images1)[0])
+            model.online_network.zero_grad()
+            #projector.zero_grad()
+            #images1 = resize(images1,image_size)
+            _, z1, h1 = model.online_network(images1)
+            #features= projector(encoder(images1)[0])
+            features = z1
+            
                 #features=encoder(images)[0]
             features = F.normalize(features, dim=1)
             all_features[:,base:base+len(images1)]=features.t().cpu()
