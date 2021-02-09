@@ -5,6 +5,7 @@ import logging
 import os
 import shutil
 import sys
+from pytorch_lightning.cluster_environments import torchelastic_environment
 import yaml
 
 from yaml import load
@@ -20,6 +21,9 @@ from selfsupmotion.utils.reproducibility_utils import set_seed
 
 import selfsupmotion.data.objectron.hdf5_parser
 import selfsupmotion.data.objectron.file_datamodule
+
+from torch.cuda.amp import autocast
+from torchvision.transforms.functional import resize
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +54,8 @@ def main():
     parser.add_argument('--start-from-scratch', action='store_true',
                         help='will not load any existing saved model - even if present')
     parser.add_argument('--debug', action='store_true')
+    parser.add_argument("--embeddings_device",type=str,default="cuda",help="Which device to use for embeddings generation.")
+    parser.add_argument('--embeddings', action='store_true',help="Skip training and generate embeddings for evaluation.")
 
     parser = pl.Trainer.add_argparse_args(parser)
 
@@ -151,10 +157,69 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger):
 
     model = load_model(hyper_params)
 
-    train(model=model, optimizer=None, loss_fun=None, datamodule=dm,
-          patience=hyper_params['patience'], output=output_dir,
-          max_epoch=hyper_params['max_epoch'], use_progress_bar=not args.disable_progressbar,
-          start_from_scratch=args.start_from_scratch, mlf_logger=mlf_logger, precision=hyper_params["precision"])
+    if args.embeddings:
+        generate_embeddings(args, model, datamodule=dm,train=True)
+        generate_embeddings(args, model, datamodule=dm,train=False)
+    else:
+        train(model=model, optimizer=None, loss_fun=None, datamodule=dm,
+              patience=hyper_params['patience'], output=output_dir,
+              max_epoch=hyper_params['max_epoch'], use_progress_bar=not args.disable_progressbar,
+              start_from_scratch=args.start_from_scratch, mlf_logger=mlf_logger, precision=hyper_params["precision"])
+
+import torch
+from tqdm import tqdm
+import torch.nn.functional as F 
+import numpy as np
+
+def generate_embeddings(args, model, datamodule, train=True):
+    if train:
+        dataloader = datamodule.train_dataloader(evaluation=True) #Do not use data augmentation for evaluation.
+        dataset  = datamodule.train_dataset
+        prefix="train_"
+    else:
+        dataloader = datamodule.val_dataloader()
+        dataset = datamodule.val_dataset
+        prefix=""
+
+    encoder, projector = model.online_network.encoder, model.online_network.projector
+    local_progress=tqdm(dataloader)
+    
+    model.online_network=model.online_network.to(args.embeddings_device)
+    #max_batch = int(args.subset_size*len(dataset)/args.batch_size)
+    all_features = torch.zeros((projector.output_dim, len(dataset))).cuda()
+        #train_features = torch.zeros((encoder.fc.in_features, max_batch*args.batch_size))
+        
+    #train_labels = torch.zeros(max_batch*args.batch_size, dtype=torch.int64).cuda()
+    all_targets = []
+    sequence_uids = []
+    with torch.no_grad():
+        batch_num = 0
+        for data, targets in local_progress:
+            images1, _, meta= data
+            #images1, _ = images
+            images1 = images1.to(args.embeddings_device, non_blocking=True)
+            #meta = labels[1:]
+            #targets = labels[0]
+            base = batch_num*dataloader.batch_size
+
+            #with autocast():
+            encoder.zero_grad()
+            projector.zero_grad()
+                #images = resize(images1,[224,224])
+            features= projector(encoder(images1)[0])
+                #features=encoder(images)[0]
+            features = F.normalize(features, dim=1)
+            all_features[:,base:base+len(images1)]=features.t().cpu()
+            #train_labels[base:base+len(images)]=labels
+            all_targets += targets.cpu().numpy().tolist()
+            sequence_uids += meta
+            batch_num+=1
+            #if batch_num >= max_batch:
+            #    break
+    
+    np.save(f"{args.output}/{prefix}embeddings.npy",all_features.cpu().numpy())
+    train_info = np.vstack([np.array(all_targets),np.array(sequence_uids)])
+    np.save(f"{args.output}/{prefix}info.npy", train_info)
 
 
 if __name__ == '__main__':
