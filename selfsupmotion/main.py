@@ -155,8 +155,8 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger):
     model = load_model(hyper_params)
 
     if args.embeddings:
-        generate_embeddings(args, model, datamodule=dm,train=True)
-        generate_embeddings(args, model, datamodule=dm,train=False)
+        generate_embeddings(args, model, datamodule=dm,train=True, image_size=hyper_params["image_size"])
+        generate_embeddings(args, model, datamodule=dm,train=False, image_size=hyper_params["image_size"])
     else:
         train(model=model, optimizer=None, loss_fun=None, datamodule=dm,
               patience=hyper_params['patience'], output=output_dir,
@@ -168,7 +168,7 @@ from tqdm import tqdm
 import torch.nn.functional as F 
 import numpy as np
 
-def generate_embeddings(args, model, datamodule, train=True):
+def generate_embeddings(args, model, datamodule, train=True, image_size=224):
     if train:
         dataloader = datamodule.train_dataloader(evaluation=True) #Do not use data augmentation for evaluation.
         dataset  = datamodule.train_dataset
@@ -202,7 +202,7 @@ def generate_embeddings(args, model, datamodule, train=True):
             #with autocast():
             encoder.zero_grad()
             projector.zero_grad()
-                #images = resize(images1,[224,224])
+            images1 = resize(images1,image_size)
             features= projector(encoder(images1)[0])
                 #features=encoder(images)[0]
             features = F.normalize(features, dim=1)
