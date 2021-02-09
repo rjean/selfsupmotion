@@ -255,21 +255,27 @@ class ObjectronDataset(torch.utils.data.Dataset):
 OBJECTRON_PATH = "datasets/objectron/96x96/"
 
 class ObjectronFileDataModule(pytorch_lightning.LightningDataModule):
-    def __init__(self, data_dir: str = OBJECTRON_PATH, batch_size=512, image_size=96, num_workers=6):
+    def __init__(self, data_dir: str = OBJECTRON_PATH, batch_size=512, image_size=96, num_workers=6, pairing="next"):
         super().__init__()
         self.batch_size = batch_size
         self.image_size = image_size
         self.issetup=False
         self.num_workers = num_workers
+        self.pairing = pairing
     
     def setup(self, stage=None):
         if not self.issetup:
+            #train_transform = self.get_objectron_transform(self.image_size)
+            #eval_transform = self.get_objectron_transform(self.image_size, evaluation=True)
             self.train_transform = self.get_objectron_transform(self.image_size)
             self.eval_transform = self.get_objectron_transform(self.image_size, evaluation=True)
-            self.train_dataset = ObjectronDataset(OBJECTRON_PATH,split="train", transform=self.train_transform)
+            self.train_dataset = ObjectronDataset(OBJECTRON_PATH,split="train", transform=self.train_transform, objectron_pair=self.pairing)
+            self.val_dataset = ObjectronDataset(OBJECTRON_PATH, split="valid", transform=self.eval_transform, objectron_pair=self.pairing)
+            self.test_dataset = ObjectronDataset(OBJECTRON_PATH, split="test", transform=self.eval_transform, objectron_pair=self.pairing)
+            #self.train_dataset = ObjectronDataset(OBJECTRON_PATH,split="train", transform=self.train_transform)
             #self.train_eval_dataset = ObjectronDataset(OBJECTRON_PATH,split="train", transform=eval_transform)
-            self.val_dataset = ObjectronDataset(OBJECTRON_PATH, split="valid", transform=self.eval_transform)
-            self.test_dataset = ObjectronDataset(OBJECTRON_PATH, split="test", transform=self.eval_transform)
+            #self.val_dataset = ObjectronDataset(OBJECTRON_PATH, split="valid", transform=self.eval_transform)
+            #self.test_dataset = ObjectronDataset(OBJECTRON_PATH, split="test", transform=self.eval_transform)
             self.train_sample_count = len(self.train_dataset)
             self.issetup=True
     

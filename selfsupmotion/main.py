@@ -141,7 +141,10 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger):
             precision=hyper_params["precision"]
         )
     elif args.data_module=="file":
-        dm = selfsupmotion.data.objectron.file_datamodule.ObjectronFileDataModule(num_workers=hyper_params["num_workers"],batch_size=hyper_params["batch_size"] )
+        dm = selfsupmotion.data.objectron.file_datamodule.ObjectronFileDataModule(
+            num_workers=hyper_params["num_workers"],
+            batch_size=hyper_params["batch_size"],
+            pairing=hyper_params["pairing"])
         dm.setup() #In order to have the sample count.
     else:
         raise ValueError(f"Invalid datamodule specified on CLU : {args.data_module}")
