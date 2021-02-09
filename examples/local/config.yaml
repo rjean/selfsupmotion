@@ -11,6 +11,7 @@ feat_dim: 128
 patience: 5
 max_epoch: 100
 exp_name: my_exp_1
+image_size: 224
 gpus: 1
 num_workers: 2
 seed: None

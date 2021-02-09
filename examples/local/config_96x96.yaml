@@ -1,4 +1,4 @@
-batch_size: 512
+batch_size: 256
 optimizer: sgd
 learning_rate: 0.03
 weight_decay: 0.0005
@@ -15,5 +15,7 @@ gpus: 1
 num_workers: 16
 seed: None
 precision: 32 #16-bit is unstable!!!
+image_size: 96
+pairing: next
 
 
