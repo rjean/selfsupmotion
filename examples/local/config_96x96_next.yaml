@@ -8,7 +8,7 @@ architecture: simsiam
 backbone: resnet18
 hidden_mlp: 512
 feat_dim: 2048
-patience: 5
+patience: 10 #We don't want to early stop. The disantanglement gets better with time, even though we get perfect classification accuracy.
 max_epoch: 50
 exp_name: simsiam_96x96_next
 pairing: next
