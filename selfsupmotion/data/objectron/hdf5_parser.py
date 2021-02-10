@@ -187,8 +187,10 @@ class ObjectronHDF5FrameTupleParser(ObjectronHDF5SequenceParser):
                 for frame_idx in meta[1]
             ]) for field in self.target_fields
         }
+        uid = "hdf5_" + meta[0] + "_" + str(seq_data["IMAGE_ID"][meta[1][0]]) #Not compatible with my notebooks.
         sample = {
             "SEQ_IDX": meta[0],
+            "UID": uid, #TODO: Harmonize Unique Identifiers for evaluation.
             "FRAME_IDXS": np.asarray([seq_data["IMAGE_ID"][idx] for idx in meta[1]]),
             "POINTS": np.pad(np.asarray(meta[2]), ((0, 0), (0, 0), (0, 2))),  # pad kpts for augments
             "CLASS": self.objects.index(meta[0].split("/")[0]),
