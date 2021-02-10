@@ -303,7 +303,10 @@ class ObjectronFileDataModule(pytorch_lightning.LightningDataModule):
             self.train_dataset.transform = self.eval_transform
         return DataLoader(self.train_dataset, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=True)
     
-    def val_dataloader(self) -> DataLoader:
+    def val_dataloader(self, evaluation=False) -> DataLoader:
+        self.val_dataset.memory = False
+        if evaluation:
+            self.val_dataset.memory = True # Avoid horizontal flip for evaluation.
         return DataLoader(self.val_dataset, batch_size=self.batch_size, num_workers=self.num_workers)
     
     def test_dataloader(self) -> DataLoader:
