@@ -7,7 +7,7 @@ from selfsupmotion.models.simsiam import SimSiam
 logger = logging.getLogger(__name__)
 
 
-def load_model(hyper_params, checkpoint):  # pragma: no cover
+def load_model(hyper_params, checkpoint=None):  # pragma: no cover
     """Instantiate a model.
 
     Args:
