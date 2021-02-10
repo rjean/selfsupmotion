@@ -30,9 +30,9 @@ if __name__ == "__main__":
         "IMAGE_WIDTH", "IMAGE_HEIGHT", "ORIENTATION",
     ]
 
-    objectron_subset = "train"  # in ["train", "test"]
+    objectron_subset = "test"  # in ["train", "test"]
     target_subsampl_rate = 5  # jump and extract one out of every 5 frames
-    hdf5_output_path = data_path + f"extract_s{target_subsampl_rate}_raw.hdf5.tmp"
+    hdf5_output_path = data_path + f"extract_s{target_subsampl_rate}_raw_{objectron_subset}.hdf5.tmp"
 
     with h5py.File(hdf5_output_path, "w") as fd:
         fd.attrs["target_subsampl_rate"] = target_subsampl_rate
@@ -42,20 +42,29 @@ if __name__ == "__main__":
         fd.attrs["attr_fields"] = attr_fields_to_export
 
         for object in ObjectronSequenceParser.all_objects:
-            parser = ObjectronSequenceParser(data_path, objects=[object])
+            parser = ObjectronSequenceParser(
+                objectron_root=data_path,
+                subset=objectron_subset,
+                objects=[object]
+            )
             try:
 
                 for seq_idx, (seq_context, seq_data) in enumerate(parser):
                     seq_name = f"{object}/{seq_idx:05d}"
                     print(f"Processing: {seq_name}")
-                    if object == "bike" and seq_idx in [182]:
-                        continue  # bug in encoding (parsing blocks and goes oom)
-                    if object == "book" and (seq_idx in [24, 584, 1500] or seq_idx >= 1531):
-                        continue  # bug in encoding (tfrecord readback goes boom)
-                    if object == "bottle" and seq_idx in [666]:
-                        continue  # bug in encoding (tfrecord readback goes boom)
-                    if object == "chair" and seq_idx in [436]:
-                        continue  # bug in encoding (tfrecord readback goes boom)
+                    if objectron_subset == "train":
+                        if object == "bike" and seq_idx in [182]:
+                            continue  # bug in encoding (parsing blocks and goes oom)
+                        if object == "book" and (seq_idx in [24, 584, 1500] or seq_idx >= 1531):
+                            continue  # bug in encoding (tfrecord readback goes boom)
+                        if object == "bottle" and seq_idx in [666]:
+                            continue  # bug in encoding (tfrecord readback goes boom)
+                        if object == "chair" and seq_idx in [436]:
+                            continue  # bug in encoding (tfrecord readback goes boom)
+                    elif objectron_subset == "test":
+                        #if object == "bike" and seq_idx in [182]:
+                        #    continue  # bug in encoding (parsing blocks and goes oom)
+                        pass
 
                     try:
                         sample_seq = ObjectronFrameParser(seq_context, seq_data)

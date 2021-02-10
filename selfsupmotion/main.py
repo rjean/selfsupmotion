@@ -135,12 +135,14 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger):
     if args.data_module=="hdf5":
         dm = selfsupmotion.data.objectron.hdf5_parser.ObjectronFramePairDataModule(
             hdf5_path=data_dir,
+            tuple_length=hyper_params.get("tuple_length", 2),
+            frame_offset=hyper_params.get("frame_offset", 1),
+            tuple_offset=hyper_params.get("tuple_offset", 2),
             input_height=hyper_params.get("input_height", 224),
             gaussian_blur=hyper_params.get("gaussian_blur", True),
             jitter_strength=hyper_params.get("jitter_strength", 1.0),
             batch_size=hyper_params["batch_size"],
             num_workers=hyper_params["num_workers"],
-            precision=hyper_params["precision"]
         )
     elif args.data_module=="file":
         dm = selfsupmotion.data.objectron.file_datamodule.ObjectronFileDataModule(
@@ -150,6 +152,7 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger):
         dm.setup() #In order to have the sample count.
     else:
         raise ValueError(f"Invalid datamodule specified on CLI : {args.data_module}")
+
     if "num_samples" not in hyper_params:
         # the model impl uses the sample count to prepare scheduled LR values in advance
         hyper_params["num_samples"] = len(dm.train_dataset) #dm.train_sample_count

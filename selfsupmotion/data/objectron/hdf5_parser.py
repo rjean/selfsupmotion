@@ -72,6 +72,23 @@ class ObjectronHDF5SequenceParser(torch.utils.data.Dataset):
             self.local_fd = h5py.File(self.hdf5_path, mode="r")
         return self.local_fd[self.seq_name_map[idx]]
 
+    @staticmethod
+    def _is_frame_valid(dataset, frame_idx):
+        # to keep things light and fast (enough), we'll only look at object centroids
+        im_coords = dataset["CENTROID_2D_IM"][frame_idx]
+        # in short, if any centroid is outside the image frame by more than its size, it's bad
+        # (this will catch crazy-bad object coordinates that would lead to insanely big crops)
+        return -640 < im_coords[0] < 1280 and -480 < im_coords[1] < 960
+
+    @staticmethod
+    def _decode_jpeg(data):
+        if turbojpeg is not None:
+            image = turbojpeg.decode(data)
+        else:
+            image = cv.imdecode(data, cv.IMREAD_COLOR)
+        image = cv.cvtColor(image, cv.COLOR_BGR2RGB)
+        return image
+
 
 class ObjectronHDF5FrameTupleParser(ObjectronHDF5SequenceParser):
     """Objectron HDF5 dataset parser.
@@ -97,6 +114,8 @@ class ObjectronHDF5FrameTupleParser(ObjectronHDF5SequenceParser):
             _target_fields: typing.Optional[typing.List[typing.AnyStr]] = None,
             _transforms: typing.Optional[typing.Any] = None,
     ):
+        # also make a local var for the archive name, as we don't want to overwrite cache for each
+        hdf5_name = os.path.basename(hdf5_path)  # yes, it's normal that this looks "unused" (it's used)
         cache_hash = selfsupmotion.data.utils.get_params_hash(
             {k: v for k, v in vars().items() if not k.startswith("_") and k != "self"})
         super().__init__(hdf5_path=hdf5_path, objects=objects)
@@ -129,10 +148,11 @@ class ObjectronHDF5FrameTupleParser(ObjectronHDF5SequenceParser):
                     seq_len = len(seq_data["IMAGE"])
                     if seq_len <= self.frame_offset:  # skip, can't create frame tuples
                         continue
+                    seq_image_size = (seq_data.attrs["IMAGE_WIDTH"], seq_data.attrs["IMAGE_HEIGHT"])
                     # note: the frame idx here is not the real index if the sequence was subsampled
                     tuple_start_idx = 0
                     while tuple_start_idx < seq_len:
-                        candidate_tuple_idxs = []
+                        candidate_tuple_idxs, candidate_tuple_kpts = [], []
                         for tuple_idx_offset in range(self.tuple_length):
                             curr_frame_idx = tuple_start_idx + tuple_idx_offset * self.frame_offset
                             if curr_frame_idx >= seq_len:
@@ -140,31 +160,19 @@ class ObjectronHDF5FrameTupleParser(ObjectronHDF5SequenceParser):
                             if not self._is_frame_valid(seq_data, curr_frame_idx):
                                 break  # if an element has a bad frame, break it off
                             candidate_tuple_idxs.append(curr_frame_idx)
+                            # we also get the 2d point projections here
+                            curr_pts = seq_data["POINT_2D"][curr_frame_idx].reshape((-1, 3))[:, :2]
+                            assert len(curr_pts) == 9, "did we not melt the dataset down to 1 instance?"
+                            candidate_tuple_kpts.append(np.multiply(curr_pts, seq_image_size))
                         if len(candidate_tuple_idxs) == self.tuple_length:  # if it's all good, keep it
+                            # the map will match sample indices to (SEQ_ID, TUPLE_FRAME_IDXS, TUPLE_KPTS_ARRAY)
                             tuple_map[len(tuple_map)] = \
-                                (object + "/" + seq_id, tuple(candidate_tuple_idxs))
+                                (object + "/" + seq_id, tuple(candidate_tuple_idxs), np.asarray(candidate_tuple_kpts))
                         tuple_start_idx += self.tuple_offset
         return tuple_map
 
-    @staticmethod
-    def _is_frame_valid(dataset, frame_idx):
-        # to keep things light and fast (enough), we'll only look at object centroids
-        im_coords = dataset["CENTROID_2D_IM"][frame_idx]
-        # in short, if any centroid is outside the image frame by more than its size, it's bad
-        # (this will catch crazy-bad object coordinates that would lead to insanely big crops)
-        return -640 < im_coords[0] < 1280 and -480 < im_coords[1] < 960
-
     def __len__(self):
         return len(self.frame_pair_map)
-
-    @staticmethod
-    def _decode_jpeg(data):
-        if turbojpeg is not None:
-            image = turbojpeg.decode(data)
-        else:
-            image = cv.imdecode(data, cv.IMREAD_COLOR)
-        image = cv.cvtColor(image, cv.COLOR_BGR2RGB)
-        return image
 
     def __getitem__(self, idx):
         assert 0 <= idx < len(self.frame_pair_map), "frame pair index oob"
@@ -179,21 +187,27 @@ class ObjectronHDF5FrameTupleParser(ObjectronHDF5SequenceParser):
                 for frame_idx in meta[1]
             ]) for field in self.target_fields
         }
-        sample = {"SEQ_ID": meta[0], **sample}
+        sample = {
+            "SEQ_IDX": meta[0],
+            "FRAME_IDXS": np.asarray([seq_data["IMAGE_ID"][idx] for idx in meta[1]]),
+            "POINTS": np.pad(np.asarray(meta[2]), ((0, 0), (0, 0), (0, 2))),  # pad kpts for augments
+            "CLASS": self.objects.index(meta[0].split("/")[0]),
+            **sample,
+        }
         if self.transforms is not None:
             sample = self.transforms(sample)
-        class_label = self.objects.index(meta[0].split("/")[0])
-        return sample, class_label
+        return sample
 
 
 class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
 
-    name = "objectron_fp"
+    name = "objectron_frame_pair"
 
     def __init__(
             self,
             hdf5_path: typing.AnyStr,
             objects: typing.Optional[typing.Sequence[typing.AnyStr]] = None,  # default => use all
+            keypoints_mode: bool = False,
             tuple_length: int = 2,
             frame_offset: int = 1,
             tuple_offset: int = 2,
@@ -218,6 +232,7 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
         self.valid_split_ratio = valid_split_ratio
         self.hdf5_path = hdf5_path
         self.objects = objects
+        self.keypoints_mode = keypoints_mode
         self.tuple_length = tuple_length
         self.frame_offset = frame_offset
         self.tuple_offset = tuple_offset
@@ -283,34 +298,57 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
         )
 
     def train_transform(self):
-        return selfsupmotion.data.objectron.data_transforms.SimSiamFramePairTrainDataTransform(
-            input_height=self.image_size,
-            gaussian_blur=self.gaussian_blur,
-            jitter_strength=self.jitter_strength,
-        )
+        if self.keypoints_mode:
+            return selfsupmotion.data.objectron.data_transforms.SimSiamFramePairTrainDataTransform(
+                crop_height="auto",
+                input_height=self.image_size,
+                gaussian_blur=self.gaussian_blur,
+                jitter_strength=self.jitter_strength,
+                crop_scale=(0.6, 1.0),
+                crop_ratio=(0.75, 1.3333),
+                use_hflip_augment=False,  # @@@@@ bad for keypoints?
+            )
+        else:
+            return selfsupmotion.data.objectron.data_transforms.SimSiamFramePairTrainDataTransform(
+                # @@@ TODO: is auto-cropping best here as well?
+                input_height=self.image_size,
+                gaussian_blur=self.gaussian_blur,
+                jitter_strength=self.jitter_strength,
+            )
 
     def val_transform(self):
-        return selfsupmotion.data.objectron.data_transforms.SimSiamFramePairEvalDataTransform(
-            input_height=self.image_size,
-            gaussian_blur=self.gaussian_blur,
-            jitter_strength=self.jitter_strength,
-        )
+        if self.keypoints_mode:
+            return selfsupmotion.data.objectron.data_transforms.SimSiamFramePairEvalDataTransform(
+                crop_height="auto",
+                input_height=self.image_size,
+                gaussian_blur=self.gaussian_blur,
+                jitter_strength=self.jitter_strength,
+                crop_scale=(0.8, 1.0),
+                crop_ratio=(0.75, 1.3333),
+                use_hflip_augment=False,  # @@@@@ bad for keypoints?
+            )
+        else:
+            return selfsupmotion.data.objectron.data_transforms.SimSiamFramePairEvalDataTransform(
+                input_height=self.image_size,
+                gaussian_blur=self.gaussian_blur,
+                jitter_strength=self.jitter_strength,
+            )
 
 
 if __name__ == "__main__":
     data_path = "/wdata/datasets/objectron/"
     hdf5_path = data_path + "extract_s5_raw.hdf5"
+    display_keypoints = True
 
     batch_size = 1
     max_iters = 50
     dm = ObjectronFramePairDataModule(
         hdf5_path=hdf5_path,
+        keypoints_mode=display_keypoints,
        # frame_offset=2,
-        input_height=224,
-        gaussian_blur=True,
-        jitter_strength=1.0,
         batch_size=batch_size,
-        num_workers=2,
+       # num_workers=2,
+        num_workers=0,
     )
     assert dm.train_sample_count > 0
 
@@ -322,12 +360,14 @@ if __name__ == "__main__":
     iter = 0
     init_time = time.time()
     for batch in tqdm.tqdm(loader, total=len(loader)):
-        frames, label = batch
         if display:
             display_frames = []
-            for frame_idx, frame in enumerate(frames):
+            for frame_idx, (frame, pts) in enumerate(zip(batch["OBJ_CROPS"], batch["POINTS"])):
                 # de-normalize and ready image for opencv display to show the result of transforms
                 frame = (((frame.squeeze(0).numpy().transpose((1, 2, 0)) * norm_std) + norm_mean) * 255).astype(np.uint8)
+                for pt in pts.view(-1, 2):
+                    pt = (int(round(pt[0].item())), int(round(pt[1].item())))
+                    frame = cv.circle(frame.copy(), pt, radius=3, color=(127, 255, 112), thickness=-1)
                 display_frames.append(frame)
             cv.imshow(
                 f"frames",

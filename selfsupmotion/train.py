@@ -4,14 +4,11 @@ import logging
 import os
 
 import mlflow
-import orion
-import yaml
-import pytorch_lightning as pl
 import torch
-from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
+import pl_bolts
+import pytorch_lightning as pl
+import yaml
 from orion.client import report_results
-from yaml import dump
-from yaml import load
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +32,7 @@ def write_stats(output, best_eval_score, epoch, remaining_patience):
                 'remaining_patience': remaining_patience,
                 'mlflow_run_id': mlflow_run_id}
     with open(os.path.join(output, STAT_FILE_NAME), 'w') as stream:
-        dump(to_store, stream)
+        yaml.dump(to_store, stream)
 
 
 def load_stats(output):
@@ -45,7 +42,7 @@ def load_stats(output):
         output (str): Output directory
     """
     with open(os.path.join(output, STAT_FILE_NAME), 'r') as stream:
-        stats = load(stream, Loader=yaml.FullLoader)
+        stats = yaml.load(stream, Loader=yaml.FullLoader)
     return stats['best_dev_metric'], stats['epoch'], stats['remaining_patience'], \
         stats['mlflow_run_id']
 
@@ -130,7 +127,7 @@ def train_impl(
         start_from_scratch (bool): Start training from scratch (ignore checkpoints)
         mlf_logger (obj): MLFlow logger callback.
     """
-    best_checkpoint_callback = ModelCheckpoint(
+    best_checkpoint_callback = pl.callbacks.ModelCheckpoint(
         filepath=os.path.join(output, BEST_MODEL_NAME),
         save_top_k=1,
         verbose=use_progress_bar,
@@ -140,7 +137,7 @@ def train_impl(
     )
 
     last_model_path = os.path.join(output, LAST_MODEL_NAME)
-    last_checkpoint_callback = ModelCheckpoint(
+    last_checkpoint_callback = pl.callbacks.ModelCheckpoint(
         filepath=last_model_path,
         verbose=use_progress_bar,
         period=1
@@ -157,12 +154,17 @@ def train_impl(
         logger.info('starting training from scratch')
         resume_from_checkpoint = None
 
-    early_stopping = EarlyStopping("val_accuracy", mode="auto", patience=patience,
-                                   verbose=use_progress_bar)
-    
+    early_stopping = pl.callbacks.EarlyStopping("val_accuracy", mode="auto", patience=patience, verbose=use_progress_bar)
+    printer_callback = pl_bolts.callbacks.PrintTableMetricsCallback()
+
     trainer = pl.Trainer(
         # @@@@@@@@@@@ TODO check if we can add an online evaluator w/ callback
-        callbacks=[early_stopping, best_checkpoint_callback, last_checkpoint_callback],
+        callbacks=[
+            early_stopping,
+            best_checkpoint_callback,
+            last_checkpoint_callback,
+            printer_callback,
+        ],
         checkpoint_callback=True,
         logger=mlf_logger,
         max_epochs=max_epoch,

@@ -9,15 +9,12 @@ from pytorch_lightning.utilities import AMPType
 from torch.optim.optimizer import Optimizer
 
 from pl_bolts.models.self_supervised.resnets import resnet18, resnet50
-from pl_bolts.models.self_supervised.simsiam.models import SiameseArm
 from pl_bolts.optimizers.lars_scheduling import LARSWrapper
-
-import torch.nn.functional as F 
 
 logger = logging.getLogger(__name__)
 
 
-class SimSiam(pl.LightningModule):
+class KeypointsRegressor(pl.LightningModule):
 
     def __init__(
             self,
@@ -30,27 +27,29 @@ class SimSiam(pl.LightningModule):
         self.num_nodes = hyper_params.get("num_nodes", 1)
         self.backbone = hyper_params.get("backbone", "resnet50")
         self.num_samples = hyper_params.get("num_samples")
-        self.num_samples_valid = hyper_params.get("num_samples_valid")
         self.batch_size = hyper_params.get("batch_size")
 
-        self.hidden_mlp = hyper_params.get("hidden_mlp", 2048)
-        self.feat_dim = hyper_params.get("feat_dim", 128)
+        #self.hidden_mlp = hyper_params.get("hidden_mlp", 2048)
+        #self.feat_dim = hyper_params.get("feat_dim", 128)
         self.first_conv = hyper_params.get("first_conv", True)
         self.maxpool1 = hyper_params.get("maxpool1", True)
+        self.dropout = hyper_params.get("dropout", 0.2)
+        self.input_height = hyper_params.get("input_height", 224)
 
         self.optim = hyper_params.get("optimizer", "adam")
         self.lars_wrapper = hyper_params.get("lars_wrapper", True)
         self.exclude_bn_bias = hyper_params.get("exclude_bn_bias", False)
         self.weight_decay = hyper_params.get("weight_decay", 1e-6)
-        self.temperature = hyper_params.get("temperature", 0.1)
+        #self.temperature = hyper_params.get("temperature", 0.1)
 
         self.start_lr = hyper_params.get("start_lr", 0.)
         self.final_lr = hyper_params.get("final_lr", 1e-6)
         self.learning_rate = hyper_params.get("learning_rate", 1e-3)
         self.warmup_epochs = hyper_params.get("warmup_epochs", 10)
-        self.max_epochs = hyper_params.get("max_epochs", 100)
+        self.max_epochs = hyper_params.get("max_epochs", 250)
 
         self.init_model()
+        self.loss_fn = torch.nn.MSELoss()
 
         # compute iters per epoch
         nb_gpus = len(self.gpus) if isinstance(self.gpus, (list, tuple)) else self.gpus
@@ -71,8 +70,6 @@ class SimSiam(pl.LightningModule):
 
         self.lr_schedule = np.concatenate((warmup_lr_schedule, cosine_lr_schedule))
 
-
-
     def init_model(self):
         assert self.backbone in ["resnet18", "resnet50"]
         if self.backbone == "resnet18":
@@ -80,86 +77,51 @@ class SimSiam(pl.LightningModule):
         else:
             backbone = resnet50
 
-        backbone_network = backbone(first_conv=self.first_conv, maxpool1=self.maxpool1, return_all_feature_maps=False)
-        self.online_network = SiameseArm(
-            backbone_network, input_dim=self.hidden_mlp, hidden_size=self.hidden_mlp, output_dim=self.feat_dim
+        self.encoder = backbone(
+            first_conv=self.first_conv,
+            maxpool1=self.maxpool1,
+            return_all_feature_maps=False,
         )
-        #max_batch = math.ceil(self.num_samples/self.batch_size)
-        encoder, projector = self.online_network.encoder, self.online_network.projector
-        self.train_features = torch.zeros((self.num_samples,projector.input_dim))
-        self.train_meta = []
-        self.train_targets = -torch.ones((self.num_samples))
-        self.valid_features = torch.zeros((self.num_samples_valid, projector.input_dim))
-        self.valid_meta = []
-        self.cuda_train_features = None
-        
+        if self.dropout is not None:  # @@@@ experiment with this
+            self.decoder = torch.nn.Sequential(
+                torch.nn.Dropout(p=self.dropout),
+                torch.nn.Linear(2048, 18, bias=True),
+            )
+        else:
+            self.decoder = torch.nn.Sequential(
+                torch.nn.Linear(2048, 1024, bias=False),
+                torch.nn.BatchNorm1d(1024),
+                torch.nn.ReLU(inplace=True),
+                torch.nn.Linear(1024, 18, bias=True),
+            )
 
     def forward(self, x):
-        y, _, _ = self.online_network(x)
-        return y
-
-    def cosine_similarity(self, a, b, version="simplified"):
-        if version == "original":
-            b = b.detach()  # stop gradient of backbone + projection mlp
-            a = F.normalize(a, dim=-1)
-            b = F.normalize(b, dim=-1)
-            sim = -1 * (a * b).sum(-1).mean()
-        elif version=="simplified":
-            sim = -F.cosine_similarity(a, b.detach(), dim=-1).mean()
-        else:
-            raise ValueError(f"Unsupported cosine similarity version: {version}")
-        return sim
+        return self.decoder(x)
 
     def training_step(self, batch, batch_idx):
-        assert len(batch["OBJ_CROPS"]) == 2
-        img_1, img_2 = batch["OBJ_CROPS"]
-
-        if self.cuda_train_features is not None:
-            self.cuda_train_features = None #Free GPU memory
-        # Image 1 to image 2 loss
-        f1, z1, h1 = self.online_network(img_1)
-        f2, z2, h2 = self.online_network(img_2)
-        loss = self.cosine_similarity(h1, z2) / 2 + self.cosine_similarity(h2, z1) / 2
-
-        base = batch_idx*self.batch_size
-        train_features= F.normalize(f1.detach(), dim=1).cpu()
-        self.train_meta+=meta
-        self.train_features[base:base+len(img_1)]=train_features
-        self.train_targets[base:base+len(img_1)]=y
-        # log results
+        loss = None
+        for img, pts in zip(batch["OBJ_CROPS"], batch["POINTS"]):
+            embd = self.encoder(img)[0]
+            preds = self.decoder(embd).view(pts.shape)
+            curr_loss = self.loss_fn(preds, pts / self.input_height)
+            if loss is None:
+                loss = curr_loss
+            else:
+                loss += curr_loss
         self.log("train_loss", loss)
-
         return loss
 
     def validation_step(self, batch, batch_idx):
-        assert len(batch["OBJ_CROPS"]) == 2
-        img_1, img_2 = batch["OBJ_CROPS"]
-
-        # Image 1 to image 2 loss
-        f1, z1, h1 = self.online_network(img_1)
-        f2, z2, h2 = self.online_network(img_2)
-        if self.cuda_train_features is None: #Transfer to GPU once.
-            self.cuda_train_features = self.train_features.cuda()
-
-        loss = self.cosine_similarity(h1, z2) / 2 + self.cosine_similarity(h2, z1) / 2
-
-        self.valid_meta+=meta
-        base = batch_idx*self.batch_size
-
-        valid_features = F.normalize(f1, dim=1).detach()
-
-        similarity = torch.mm(valid_features, self.train_features.cuda().T)
-        targets_idx= torch.argmax(similarity,axis=1).cpu()
-        neighbor_targets = self.train_targets[targets_idx]
-        match_count = (neighbor_targets==y.cpu()).sum()
-        accuracy = match_count/len(neighbor_targets)
-
-        self.valid_features[base:base+len(img_1)]=valid_features
-
-        # log results
+        loss = None
+        for img, pts in zip(batch["OBJ_CROPS"], batch["POINTS"]):
+            embd = self.encoder(img)[0]
+            preds = self.decoder(embd).view(pts.shape)
+            curr_loss = self.loss_fn(preds, pts / self.input_height)
+            if loss is None:
+                loss = curr_loss
+            else:
+                loss += curr_loss
         self.log("val_loss", loss)
-        self.log("val_accuracy", accuracy)
-
         return loss
 
     def exclude_from_wt_decay(self, named_params, weight_decay, skip_list=['bias', 'bn']):
@@ -191,19 +153,6 @@ class SimSiam(pl.LightningModule):
         else:
             params = self.parameters()
 
-        predictor_prefix = ('encoder')
-        backbone_and_encoder_parameters = [param for name, param in self.online_network.encoder.named_parameters()]
-        backbone_and_encoder_parameters+= [param for name, param in self.online_network.projector.named_parameters()]
-        lr = self.learning_rate
-        params = [{
-            'name': 'base',
-            'params': backbone_and_encoder_parameters,
-            'lr': lr
-            },{
-                'name': 'predictor',
-                'params': [param for name, param in self.online_network.predictor.named_parameters()],
-                'lr': lr
-            }]
         if self.optim == 'sgd':
             optimizer = torch.optim.SGD(params, lr=self.learning_rate, momentum=0.9, weight_decay=self.weight_decay)
         elif self.optim == 'adam':
@@ -236,11 +185,7 @@ class SimSiam(pl.LightningModule):
                 param_group["lr"] = self.lr_schedule[self.trainer.global_step]
         else:
             for param_group in optimizer.param_groups:
-                if param_group["name"]=="predictor":
-                    param_group["lr"] = self.learning_rate
-                else:
-                    param_group["lr"] = self.lr_schedule[self.trainer.global_step]
-            #param_group[0]["lr"]
+                param_group["lr"] = self.lr_schedule[self.trainer.global_step]
 
         # log LR (LearningRateLogger callback doesn't work with LARSWrapper)
         self.log('learning_rate', self.lr_schedule[self.trainer.global_step], on_step=True, on_epoch=False)

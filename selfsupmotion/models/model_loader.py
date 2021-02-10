@@ -1,8 +1,8 @@
 import logging
 import torch
-from torch import optim
 
-from selfsupmotion.models.simsiam import SimSiam
+import selfsupmotion.models.kpts_regressor
+import selfsupmotion.models.simsiam
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,9 @@ def load_model(hyper_params, checkpoint=None):  # pragma: no cover
     architecture = hyper_params['architecture']
     # __TODO__ fix architecture list
     if architecture == 'simsiam':
-        model_class = SimSiam
+        model_class = selfsupmotion.models.simsiam.SimSiam
+    elif architecture == 'kpts_regressor':
+        model_class = selfsupmotion.models.kpts_regressor.KeypointsRegressor
     else:
         raise ValueError('architecture {} not supported'.format(architecture))
     logger.info('selected architecture: {}'.format(architecture))
