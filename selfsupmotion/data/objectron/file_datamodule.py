@@ -195,28 +195,10 @@ class ObjectronDataset(torch.utils.data.Dataset):
             if filename1==filename2 and self.pairing!="same":
                 continue #Sometimes, randomly sampling will give back the same file twice.
             
-            if self.enable_cache:
-                cache_filename1=f"{filename1}.npy"
-                cache_filename2=f"{filename2}.npy"
-                if not os.path.exists(cache_filename1):
-                    image1 =Image.open(filename1)
-                    image1= expand2square(image1)
-                    np.save(cache_filename1, np.asarray(image1))
-                if not os.path.exists(cache_filename2):
-                    image2 =Image.open(filename2)
-                    image2 = expand2square(image2)
-                    np.save(cache_filename2, np.asarray(image2))
-                cached_image1=np.load(cache_filename1)
-                image1 = Image.fromarray(np.uint8(cached_image1))
-                cached_image2=np.load(cache_filename2)
-                image2 = Image.fromarray(np.uint8(cached_image2))
-                
-                
-            else:
-                image1 =Image.open(filename1)
-                image2 =Image.open(filename2)
-                image1 = expand2square(image1)
-                image2 = expand2square(image2)
+            image1 =Image.open(filename1)
+            image2 =Image.open(filename2)
+            image1 = expand2square(image1)
+            image2 = expand2square(image2)
 
             if self.horizontal_flip and random.choice([True,False]) and not self.memory:
                 image1 = ImageOps.mirror(image1)
@@ -246,12 +228,6 @@ class ObjectronDataset(torch.utils.data.Dataset):
         sample["CAT_ID"] = self.categories.index(category)
         return sample
         
-        #meta = (torch.tensor(self.categories.index(category)), uid)
-        #if not self.single:
-        #    return (image1, image2, uid), torch.tensor(self.categories.index(category))
-        #else:
-        #    #return image1, meta
-        #    raise ValueError("To be implemented!")
 
     def __len__(self):
         return len(self.samples)
