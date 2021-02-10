@@ -157,15 +157,17 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger):
     if "num_samples_valid" not in hyper_params:
         hyper_params["num_samples_valid"] = len(dm.val_dataset)
 
-    model = load_model(hyper_params)
+    
 
     if args.embeddings:
         if args.embeddings_ckpt is None:
             raise ValueError("Please manually provide the checkpoints using the --embeddings-ckpt argument")
-        model.load_from_checkpoint(args.embeddings_ckpt)
+        model = load_model(hyper_params, checkpoint=args.embeddings_ckpt)
+        #model.load_from_checkpoint(args.embeddings_ckpt)
         generate_embeddings(args, model, datamodule=dm,train=True, image_size=hyper_params["image_size"])
         generate_embeddings(args, model, datamodule=dm,train=False, image_size=hyper_params["image_size"])
     else:
+        model = load_model(hyper_params)
         train(model=model, optimizer=None, loss_fun=None, datamodule=dm,
               patience=hyper_params['patience'], output=output_dir,
               max_epoch=hyper_params['max_epoch'], use_progress_bar=not args.disable_progressbar,
@@ -182,7 +184,7 @@ def generate_embeddings(args, model, datamodule, train=True, image_size=224):
         dataset  = datamodule.train_dataset
         prefix="train_"
     else:
-        dataloader = datamodule.val_dataloader()
+        dataloader = datamodule.val_dataloader(evaluation=True)
         dataset = datamodule.val_dataset
         prefix=""
 
@@ -191,7 +193,7 @@ def generate_embeddings(args, model, datamodule, train=True, image_size=224):
     
     model.online_network=model.online_network.to(args.embeddings_device)
     #max_batch = int(args.subset_size*len(dataset)/args.batch_size)
-    all_features = torch.zeros((projector.output_dim, len(dataset))).cuda()
+    all_features = torch.zeros((projector.input_dim, len(dataset))).cuda()
         #train_features = torch.zeros((encoder.fc.in_features, max_batch*args.batch_size))
         
     #train_labels = torch.zeros(max_batch*args.batch_size, dtype=torch.int64).cuda()
