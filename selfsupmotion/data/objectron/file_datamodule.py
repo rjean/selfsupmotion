@@ -237,16 +237,21 @@ class ObjectronDataset(torch.utils.data.Dataset):
         if not success:
             raise ValueError(f"Multiple images not having the right dimensions! {filename1}, {filename2}")
             
-        if self.transform:
-            image1, image2 = self.transform(image1), self.transform(image2)
-
+        sample = {}
+        #if self.transform:
+        image1, image2 = self.transform(image1), self.transform(image2)
+        sample["OBJ_CROPS"] = (image1, image2)
         uid = self.samples[idx]["category"] + "-" + self.samples[idx]["sequence"] + "-" + str(self.samples[idx]["frame_id"])
-        meta = (torch.tensor(self.categories.index(category)), uid)
-        if not self.single:
-            return (image1, image2, uid), torch.tensor(self.categories.index(category))
-        else:
-            #return image1, meta
-            raise ValueError("To be implemented!")
+        sample["UID"] = uid
+        sample["CAT_ID"] = self.categories.index(category)
+        return sample
+        
+        #meta = (torch.tensor(self.categories.index(category)), uid)
+        #if not self.single:
+        #    return (image1, image2, uid), torch.tensor(self.categories.index(category))
+        #else:
+        #    #return image1, meta
+        #    raise ValueError("To be implemented!")
 
     def __len__(self):
         return len(self.samples)
@@ -255,13 +260,14 @@ class ObjectronDataset(torch.utils.data.Dataset):
 OBJECTRON_PATH = "datasets/objectron/96x96/"
 
 class ObjectronFileDataModule(pytorch_lightning.LightningDataModule):
-    def __init__(self, data_dir: str = OBJECTRON_PATH, batch_size=512, image_size=96, num_workers=6, pairing="next"):
+    def __init__(self, data_dir: str = OBJECTRON_PATH, batch_size=512, image_size=96, num_workers=6, pairing="next", dryrun=False):
         super().__init__()
         self.batch_size = batch_size
         self.image_size = image_size
         self.issetup=False
         self.num_workers = num_workers
         self.pairing = pairing
+        self.dryrun = dryrun
     
     def setup(self, stage=None):
         if not self.issetup:
@@ -301,6 +307,9 @@ class ObjectronFileDataModule(pytorch_lightning.LightningDataModule):
         self.train_dataset.transform=self.train_transform
         if evaluation:
             self.train_dataset.transform = self.eval_transform
+        if self.dryrun: # Just to quickly test the training loop. Trains on "test set", validation on valid set. 
+            print("WARNING: DRY RUN. Not performing real training.")
+            return self.test_dataloader()
         return DataLoader(self.train_dataset, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=True)
     
     def val_dataloader(self, evaluation=False) -> DataLoader:
