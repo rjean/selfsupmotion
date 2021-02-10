@@ -15,7 +15,7 @@ pairing: next
 gpus: 1
 num_workers: 16
 seed: None
-precision: 32 #16-bit is unstable!!!
+precision: 16 #16-bit is unstable!!!
 image_size: 96
 
 
