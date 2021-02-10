@@ -374,10 +374,10 @@ class SimSiam(pl.LightningModule):
         self.log('learning_rate', self.lr_schedule[self.trainer.global_step], on_step=True, on_epoch=False)
 
         # from lightning
-        if self.trainer.amp_backend == AMPType.NATIVE:
-            optimizer_closure()
-            self.trainer.scaler.step(optimizer)
-        elif self.trainer.amp_backend == AMPType.APEX:
+        #if self.trainer.amp_backend == AMPType.NATIVE:
+        #    optimizer_closure()
+        #    self.trainer.scaler.step(optimizer)
+        if self.trainer.amp_backend == AMPType.APEX:
             optimizer_closure()
             optimizer.step()
         else:
