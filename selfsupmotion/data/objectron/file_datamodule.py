@@ -281,11 +281,11 @@ class ObjectronFileDataModule(pytorch_lightning.LightningDataModule):
     
     def get_objectron_transform(self, image_size, mean_std=imagenet_mean_std, evaluation=False):
         if not evaluation:
-            hflip = T.RandomHorizontalFlip()
+            #hflip = T.RandomHorizontalFlip()
             p_blur = 0.5 if image_size > 32 else 0 
             transform_list = [
                 T.RandomResizedCrop(image_size, scale=(0.2, 1.0)),
-                hflip,
+                #hflip,
                 T.RandomApply([T.ColorJitter(0.4,0.4,0.4,0.1)], p=0.8),
                 T.RandomGrayscale(p=0.2),
                 T.RandomApply([T.GaussianBlur(kernel_size=image_size//20*2+1, sigma=(0.1, 2.0))], p=p_blur),
@@ -303,8 +303,11 @@ class ObjectronFileDataModule(pytorch_lightning.LightningDataModule):
             self.train_dataset.transform = self.eval_transform
         return DataLoader(self.train_dataset, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=True)
     
-    def val_dataloader(self) -> DataLoader:
-        return DataLoader(self.val_dataset, batch_size=self.batch_size, num_workers=self.num_workers)
+    def val_dataloader(self, evaluation=False) -> DataLoader:
+        self.val_dataset.memory = False
+        if evaluation:
+            self.val_dataset.memory = True # Avoid horizontal flip for evaluation.
+        return DataLoader(self.val_dataset, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=True)
     
     def test_dataloader(self) -> DataLoader:
         return DataLoader(self.test_dataset, batch_size=self.batch_size, num_workers=self.num_workers)
