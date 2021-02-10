@@ -7,7 +7,7 @@ temperature: 0.1
 architecture: simsiam
 backbone: resnet18
 hidden_mlp: 512
-feat_dim: 512
+feat_dim: 2048
 patience: 5
 max_epoch: 50
 exp_name: simsiam_96x96_next
@@ -16,5 +16,7 @@ gpus: 1
 num_workers: 16
 seed: None
 precision: 32 #16-bit is unstable!!!
+image_size: 96
+
 
 
