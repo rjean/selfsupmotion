@@ -225,7 +225,7 @@ class ObjectronDataset(torch.utils.data.Dataset):
         sample["OBJ_CROPS"] = (image1, image2)
         uid = self.samples[idx]["category"] + "-" + self.samples[idx]["sequence"] + "-" + str(self.samples[idx]["frame_id"])
         sample["UID"] = uid
-        sample["CAT_ID"] = self.categories.index(category)
+        sample["CLASS"] = self.categories.index(category)
         return sample
         
 
@@ -259,6 +259,7 @@ class ObjectronFileDataModule(pytorch_lightning.LightningDataModule):
             #self.val_dataset = ObjectronDataset(OBJECTRON_PATH, split="valid", transform=self.eval_transform)
             #self.test_dataset = ObjectronDataset(OBJECTRON_PATH, split="test", transform=self.eval_transform)
             self.train_sample_count = len(self.train_dataset)
+            self.valid_sample_count = len(self.val_dataset)
             self.issetup=True
     
     def get_objectron_transform(self, image_size, mean_std=imagenet_mean_std, evaluation=False):

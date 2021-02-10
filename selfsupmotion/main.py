@@ -157,10 +157,10 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger):
 
     if "num_samples" not in hyper_params:
         # the model impl uses the sample count to prepare scheduled LR values in advance
-        hyper_params["num_samples"] = len(dm.train_dataset) #dm.train_sample_count
+        hyper_params["num_samples"] = dm.train_sample_count #dm.train_sample_count
 
     if "num_samples_valid" not in hyper_params:
-        hyper_params["num_samples_valid"] = len(dm.val_dataset)
+        hyper_params["num_samples_valid"] = dm.valid_sample_count
 
     
 
