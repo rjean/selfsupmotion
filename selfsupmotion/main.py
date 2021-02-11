@@ -198,7 +198,7 @@ def generate_embeddings(args, model, datamodule, train=True, image_size=224):
     
     model.online_network=model.online_network.to(args.embeddings_device)
     #max_batch = int(args.subset_size*len(dataset)/args.batch_size)
-    all_features = torch.zeros((projector.input_dim, len(dataset))).cuda()
+    all_features = torch.zeros((model.online_network.encoder.fc.in_features, len(dataset))).cuda()
         #train_features = torch.zeros((encoder.fc.in_features, max_batch*args.batch_size))
         
     #train_labels = torch.zeros(max_batch*args.batch_size, dtype=torch.int64).cuda()
@@ -206,8 +206,11 @@ def generate_embeddings(args, model, datamodule, train=True, image_size=224):
     sequence_uids = []
     with torch.no_grad():
         batch_num = 0
-        for data, targets in local_progress:
-            images1, _, meta= data
+        for batch in local_progress:
+            images1 = batch["OBJ_CROPS"][0]
+            meta = batch["UID"]
+            targets = batch["CLASS"]
+            #images1, _, meta= data
             #images1, _ = images
             images1 = images1.to(args.embeddings_device, non_blocking=True)
             #meta = labels[1:]

@@ -284,6 +284,7 @@ class ObjectronFileDataModule(pytorch_lightning.LightningDataModule):
         self.train_dataset.transform=self.train_transform
         if evaluation:
             self.train_dataset.transform = self.eval_transform
+            self.train_dataset.memory = True # Avoid horizontal flip for evaluation.
         if self.dryrun: # Just to quickly test the training loop. Trains on "test set", validation on valid set. 
             print("WARNING: DRY RUN. Not performing real training.")
             return self.test_dataloader()
