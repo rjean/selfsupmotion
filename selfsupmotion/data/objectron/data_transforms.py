@@ -53,9 +53,13 @@ class SimSiamFramePairTrainDataTransform(object):
                   int(round(sample["CENTROID_2D_IM"][0, 1] - max_size / 2)))
             br = (int(round(tl[0] + max_size)), int(round(tl[1] + max_size)))
         # get crops one at a time for all frames in the seq, for all seqs in the minibatch
+        if tl==br: #should not happen!
+            print(f"Annotation error on {sample['UID']}, moving on!")
+            tl = br[0]-64, br[1]-64 #Arbirary crop, just to avoid crashing!
         output_crop_seq = []
         output_keypoints = []
         for frame_idx, (frame, kpts) in enumerate(zip(sample["IMAGE"], sample["POINTS"])):
+           
             if thelper_available:
                 crop = thelper.draw.safe_crop(image=frame, tl=tl, br=br)
             else:
@@ -68,6 +72,8 @@ class SimSiamFramePairTrainDataTransform(object):
         sample["OBJ_CROPS"] = output_crop_seq
         if output_keypoints:
             sample["POINTS"] = output_keypoints
+        for obj_crop in sample["OBJ_CROPS"]:
+            assert len(obj_crop) > 0, "Unable to crop image!" #Don't allow return empty object!
         return sample
 
     def __init__(
