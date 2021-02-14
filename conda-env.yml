@@ -15,6 +15,7 @@ dependencies:
   - lz4
   - matplotlib
   - mlflow
+  - natsort
   - numpy
   - opencv
   - pandas
@@ -29,6 +30,7 @@ dependencies:
   - tqdm
   - umap-learn
   - pip:
+    - deco
     - frozendict
     - orion>=0.1.8
     - pytorch-lightning>=1.1.5

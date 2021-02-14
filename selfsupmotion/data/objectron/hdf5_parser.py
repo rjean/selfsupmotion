@@ -188,10 +188,11 @@ class ObjectronHDF5FrameTupleParser(ObjectronHDF5SequenceParser):
             ]) for field in self.target_fields
         }
         sample = {
+            "UID": f"{meta[0]}{seq_data['IMAGE_ID'][meta[1][0]]}",
             "SEQ_IDX": meta[0],
             "FRAME_IDXS": np.asarray([seq_data["IMAGE_ID"][idx] for idx in meta[1]]),
             "POINTS": np.pad(np.asarray(meta[2]), ((0, 0), (0, 0), (0, 2))),  # pad kpts for augments
-            "CLASS": self.objects.index(meta[0].split("/")[0]),
+            "CAT_ID": self.objects.index(meta[0].split("/")[0]),
             **sample,
         }
         if self.transforms is not None:
