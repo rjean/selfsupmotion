@@ -17,6 +17,7 @@ num_workers: 16
 seed: None
 precision: 16 #16-bit is unstable!!!
 image_size: 96
+early_stop_metric: val_accuracy
 
 
 

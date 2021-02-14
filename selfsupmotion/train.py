@@ -110,7 +110,8 @@ def train_impl(
         use_progress_bar,
         start_from_scratch,
         mlf_logger,
-        precision
+        precision,
+        early_stop_metric
 ):  # pragma: no cover
     """Main training loop implementation.
 
@@ -154,7 +155,9 @@ def train_impl(
         logger.info('starting training from scratch')
         resume_from_checkpoint = None
 
-    early_stopping = pl.callbacks.EarlyStopping("val_accuracy", mode="auto", patience=patience, verbose=use_progress_bar)
+    #if 
+
+    early_stopping = pl.callbacks.EarlyStopping(early_stop_metric, mode="auto", patience=patience, verbose=use_progress_bar)
     printer_callback = pl_bolts.callbacks.PrintTableMetricsCallback()
 
     trainer = pl.Trainer(
