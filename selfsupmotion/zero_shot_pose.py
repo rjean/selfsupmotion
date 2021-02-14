@@ -48,6 +48,8 @@ FACES = np.array([
 
 BOTTOM_POINTS = [1, 2, 6, 5]
 
+use_cupy = True
+
 def create_objectron_bbox_from_points(points, color=(0,0,0)):
     assert len(color)==3
     #EDGES = (
@@ -120,10 +122,19 @@ def get_middle_bottom_point(points3d, plane_normal):
     return points3d[face].mean(axis=0)
     #return points3d[BOTTOM_POINTS].mean(axis=0)
 
-def snap_box_to_plane(points3d, plane_normal, plane_center):
+def snap_box_to_plane(points3d, plane_normal, plane_center, align_axis=True):
     bottom_middle=get_middle_bottom_point(points3d, plane_normal)
     intersect = get_intesect_relative_to_camera(plane_normal, plane_center, bottom_middle)
     snapped= points3d-(bottom_middle-intersect)
+    if align_axis:
+        box_normal = snapped[0] - intersect
+        #box_normal[0]=-box_normal
+        box_rotation = rotation_matrix_from_vectors(box_normal, plane_normal)
+        pcd_snapped = o3d.geometry.PointCloud()
+        pcd_snapped.points = o3d.utility.Vector3dVector(np.array(snapped))
+        pcd_snapped.rotate(box_rotation, intersect)
+        snapped_rotated = np.array(pcd_snapped.points)
+        snapped = snapped_rotated
     return snapped, intersect
 
 def get_cube(scaling_factor=1, center=(0,0,0)):
@@ -302,7 +313,12 @@ def read_experiment(experiment: str):
     Returns:
         tuple: validation embeddings, validation meta data, train embeddings, train meta data
     """
-    embeddings = cp.load(f"{experiment}/embeddings.npy")
+    global use_cupy
+    load_fn = cp.load
+    if not use_cupy:
+        load_fn = np.load
+    
+    embeddings = load_fn(f"{experiment}/embeddings.npy")
     if embeddings.shape [1]>embeddings.shape [0]:
         embeddings=embeddings.T
     info = numpy.load(f"{experiment}/info.npy")
@@ -310,9 +326,9 @@ def read_experiment(experiment: str):
     train_new_filename = f"{experiment}/train_embeddings.npy"
     train_old_filename = f"{experiment}/training_embeddings.npy"
     if os.path.exists(train_new_filename):
-        train_embeddings = cp.load(train_new_filename)
+        train_embeddings = load_fn(train_new_filename)
     else:
-        train_embeddings = cp.load(train_old_filename)
+        train_embeddings = load_fn(train_old_filename)
     train_info = numpy.load(f"{experiment}/train_info.npy")
     assert train_info.shape[0]==2
     info_df = pd.DataFrame(info.T)
@@ -514,7 +530,7 @@ def align_with_bbox(train_point2d_px, train_bbox, valid_bbox):
     
     return aligned_points2d_px
 
-def draw_bbox(im: PIL.Image, points2d_px: list):
+def draw_bbox(im: PIL.Image, points2d_px: list, line_color=(0,255,0)):
     """Draw a projected 2d bounding box (in pixels) over a Pillow Image
 
     Args:
@@ -540,12 +556,12 @@ def draw_bbox(im: PIL.Image, points2d_px: list):
     x_min, y_min, x_max, y_max = get_bbox(points2d_px, im.width, im.height)
     x_center = (x_max+x_min)/2
     y_center = (y_max+y_min)/2
-    draw.ellipse((x_center-5 , y_center-5,x_center+5 , y_center+5), fill=(0,255,0))
+    draw.ellipse((x_center-10 , y_center-10,x_center+10 , y_center+10), fill=(0,255,0))
     for edge in EDGES:
         p1, p2 = edge
         x1, y1 = points2d_px[p1]
         x2, y2 = points2d_px[p2]
-        draw.line((x1,y1,x2,y2), fill=(0,255,0))
+        draw.line((x1,y1,x2,y2), fill=line_color)
     return im
 
 def align_with_bbox_3d(points3d_train: list, train_bbox: tuple, valid_bbox: tuple, 
@@ -714,6 +730,7 @@ def get_match_snapped_points(idx, match_idx,  info_df, train_info_df, ground_tru
     points3d_result_rotated, points3d_result = get_match_aligned_points(idx, match_idx, info_df, train_info_df, ground_truth = ground_truth)
     snapped, intersect = snap_box_to_plane(points3d_result_rotated, plane_normal, plane_center)
     
+
     result = snapped
     if rescale:
         points2d_result, _ = get_points(train_info_df,match_idx)
@@ -742,7 +759,7 @@ def get_match_snapped_points(idx, match_idx,  info_df, train_info_df, ground_tru
 
     return result, points3d_result
 
-def _get_iou(points_train, points_valid):
+def get_iou_between_bbox(points_train, points_valid):
     try:
         v_rotated = np.array(points_train)
         v_valid = np.array(points_valid)
@@ -782,13 +799,13 @@ def get_iou(idx:int, embeddings: np.array, info_df: pd.DataFrame,
  
     #if show:
     #    visualize(points3d_valid, points3d_train_rotated, points3d_train_aligned)
-    iou_value = _get_iou(points3d_valid, points3d_processed)
+    iou_value = get_iou_between_bbox(points3d_valid, points3d_processed)
     best_iou = iou_value
     if symmetric:
         for angle in np.arange(5,360,5):
             theta = (angle/180)*np.pi
             pivoted = rotate_bbox_around_its_center(points3d_processed, theta)
-            iou_at_theta = _get_iou(pivoted, points3d_valid)
+            iou_at_theta = get_iou_between_bbox(pivoted, points3d_valid)
             if iou_at_theta > best_iou:
                 best_iou = iou_at_theta
         #_get_iou.wait()
@@ -811,12 +828,12 @@ def get_iou_rotated(points3d_processed, points3d_valid, initial_iou):
     for angle in np.arange(5,360,5):
         theta = (angle/180)*np.pi
         pivoted = rotate_bbox_around_its_center(points3d_processed, theta)
-        iou_at_theta = _get_iou(pivoted, points3d_valid)
+        iou_at_theta = get_iou_between_bbox(pivoted, points3d_valid)
         if iou_at_theta > best_iou:
             best_iou = iou_at_theta
     return best_iou
 
-def find_match_idx(idx, query_embeddings: np.ndarray, train_embeddings:np.ndarray, k=0):
+def find_match_idx(idx, query_embeddings: np.ndarray, train_embeddings:np.ndarray, k=0, score=False):
     """Find the nearest neighbor of a single query embedding in the test set in the training set.
 
     Args:
@@ -828,13 +845,22 @@ def find_match_idx(idx, query_embeddings: np.ndarray, train_embeddings:np.ndarra
     Returns:
         int: Match index in the train set.
     """
+    global use_cupy
     idx = fix_idx(idx)
+    lib = cp
+    if not use_cupy:
+        lib = np
+    
+    similarity = lib.dot(query_embeddings[idx].T,train_embeddings)
     if k != 0:
-        best_matches = cp.argsort(-cp.dot(query_embeddings[idx].T,train_embeddings))
+        best_matches = lib.argsort(-similarity)
         match_idx = best_matches[k]
     else:
-        match_idx = cp.argmin(-cp.dot(query_embeddings[idx].T,train_embeddings))
-    return int(match_idx)
+        match_idx = lib.argmin(-similarity)
+    if not score:
+        return int(match_idx)
+    else:
+        return int(match_idx), float(similarity[match_idx])
 
 def find_all_match_idx(query_embeddings: np.ndarray, train_embeddings:np.ndarray, k=0):
     """Find all matches for the test set in the training set at the sametime, using cupy.
@@ -965,7 +991,7 @@ def get_iou_mp(idx:int #, symmetric=False, rescale=False,
     
     #if show:
     #    visualize(points3d_valid, points3d_train_rotated, points3d_train_aligned)
-    iou_value = _get_iou(points3d_valid, points3d_processed)
+    iou_value = get_iou_between_bbox(points3d_valid, points3d_processed)
     best_iou = iou_value
     if args.symmetric:        
         if category=="cup" or category=="bottle":
