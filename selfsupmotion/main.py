@@ -27,6 +27,9 @@ from torchvision.transforms.functional import resize
 
 logger = logging.getLogger(__name__)
 
+#import faulthandler
+#faulthandler.enable()
+
 
 def main():
     """Main entry point of the program.
@@ -162,6 +165,8 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger):
     if "num_samples_valid" not in hyper_params:
         hyper_params["num_samples_valid"] = dm.valid_sample_count
 
+    if "early_stop_metric" not in hyper_params:
+        hyper_params["early_stop_metric"]="val_loss"
     
 
     if args.embeddings:
@@ -176,7 +181,9 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger):
         train(model=model, optimizer=None, loss_fun=None, datamodule=dm,
               patience=hyper_params['patience'], output=output_dir,
               max_epoch=hyper_params['max_epoch'], use_progress_bar=not args.disable_progressbar,
-              start_from_scratch=args.start_from_scratch, mlf_logger=mlf_logger, precision=hyper_params["precision"])
+              start_from_scratch=args.start_from_scratch, mlf_logger=mlf_logger, precision=hyper_params["precision"],
+              early_stop_metric = hyper_params["early_stop_metric"]
+              )
 
 import torch
 from tqdm import tqdm
