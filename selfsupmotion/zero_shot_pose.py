@@ -139,7 +139,7 @@ def get_bounding_box(idx, match_idx, info_df, train_info_df, adjust_scale=False)
             points3d_scaled = snap_to_plane(scale_3d_bbox(points3d_scaled, scale),
                                                 plane_normal_query, plane_center_query, center_ray, obj_radius = obj_radius*scale)
             scale = get_smooth_scale_factor(points_3d_query, points3d_scaled, query_intrinsics, 2)
-            print(i, get_iou_between_bbox(np.array(points_3d_query), np.array(points3d_scaled)))
+            #print(i, get_iou_between_bbox(np.array(points_3d_query), np.array(points3d_scaled)))
         return points3d_scaled
     return points_3d_result_snapped
 
@@ -1122,11 +1122,14 @@ def get_iou_mp(idx:int #, symmetric=False, rescale=False,
         match_idx = random.sample(list(train_info_df.query(f"category=='{category}'").index),1)
         match_idx = match_idx[0]
 
-    if args.ground_plane:
-        points3d_processed, points3d_valid = get_match_snapped_points(idx, match_idx, info_df, train_info_df, ground_truth=True, rescale=args.rescale, align_axis=not args.no_align_axis)
+    if args.legacy:
+        if args.ground_plane:
+            points3d_processed, points3d_valid = get_match_snapped_points(idx, match_idx, info_df, train_info_df, ground_truth=True, rescale=args.rescale, align_axis=not args.no_align_axis)
+        else:
+            points3d_processed, points3d_valid = get_match_aligned_points(idx, match_idx, info_df, train_info_df, ground_truth=True)
     else:
-        points3d_processed, points3d_valid = get_match_aligned_points(idx, match_idx, info_df, train_info_df, ground_truth=True)
-    
+        _, points3d_valid = get_points(info_df, idx)
+        points3d_processed = get_bounding_box(idx, match_idx, info_df, train_info_df, adjust_scale=True)
     #if show:
     #    visualize(points3d_valid, points3d_train_rotated, points3d_train_aligned)
     iou_value = get_iou_between_bbox(points3d_valid, points3d_processed)
@@ -1154,6 +1157,7 @@ def main():
     parser.add_argument("--single_thread", action="store_true", help="Disable multithreading.")
     parser.add_argument("--cpu", action="store_true", help="Disable cuda accelaration.")
     parser.add_argument("--no_align_axis", action="store_true", help="Don't to to align axis with ground plane.")
+    parser.add_argument("--legacy", action="store_true", help="Deprecated legacy evalution mode")
     args = parser.parse_args()
     symmetric = args.symmetric
     rescale = args.rescale
