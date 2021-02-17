@@ -5,6 +5,7 @@ from numpy.core.fromnumeric import argmax
 import pandas as pd
 import open3d as o3d
 import random
+import math
 #import multiprocessing
 from multiprocessing import Pool
 #multiprocessing.set_start_method('spawn')
@@ -49,6 +50,112 @@ FACES = np.array([
 BOTTOM_POINTS = [1, 2, 6, 5]
 
 use_cupy = True
+
+def get_center_ajust(result_bbox, projected_center):
+    cx_result = (result_bbox[0] + result_bbox[2])/2
+    cy_result = (result_bbox[1] + result_bbox[3])/2
+    adjust_x = projected_center[0] - cx_result
+    adjust_y = projected_center[1] - cy_result
+    adjust_x_rel = adjust_x / (result_bbox[2]-result_bbox[0])
+    adjust_y_rel = adjust_y / (result_bbox[3]-result_bbox[1])
+    return adjust_x_rel, adjust_y_rel
+
+def estimate_object_center_in_query_image(query_intrinsics, query_bbox, points_2d_px_result):
+    cx = (query_bbox[0] + query_bbox[2])/2
+    cy = (query_bbox[1] + query_bbox[3])/2
+    result_bbox = get_bbox(points_2d_px_result, 360, 480) 
+    projected_center = points_2d_px_result[0]
+    adjust_x_rel, adjust_y_rel = get_center_ajust(result_bbox, projected_center)
+    adjust_x_px = adjust_x_rel * (query_bbox[2]-query_bbox[0])
+    adjust_y_px = adjust_y_rel * (query_bbox[3]-query_bbox[1])
+    cx = cx + adjust_x_px
+    cy = cy + adjust_y_px
+    b = (cx - query_intrinsics[1,2])/query_intrinsics[1,1]
+    a = (cy - query_intrinsics[0,2])/query_intrinsics[0,0]
+    return cx, cy, a, b
+
+def get_dist_from_plane(plane_normal, plane_center, point):
+    plane = get_plane_equation_center_normal(plane_center, plane_normal)
+    a, b, c, d = plane
+    X,Y,Z = point
+    return abs(a*X + b*Y + c*Z + d)/np.sqrt(a**2+b**2+c**2)
+
+def intersect_plane_with_line(plane_normal, plane_center, point1, point0=np.array([0,0,0])):
+    p0 = plane_center
+    n = plane_normal
+    l0 = point0 #Line start.
+    l = point1 #Line end
+    d = np.dot((p0-l0), n)/np.dot(l,n)
+    intersect = l0 + d*l
+    return intersect
+
+def get_bbox_area(bbox):
+    dx = bbox[2]-bbox[0]
+    dy = bbox[3]-bbox[1]
+    return np.sqrt(dx**2+dy**2)
+
+def get_scale_factor(points_3d_query, points3d_scaled, intrinsics, width=360, height=480):
+    points2d_px_result = project_3d_to_2d(points3d_scaled, intrinsics)
+    points2d_px_query = project_3d_to_2d(points_3d_query, intrinsics)
+    result_bbox = get_bbox(points2d_px_result, width, height)
+    query_bbox = get_bbox(points2d_px_query, width, height)
+    scale = get_bbox_area(query_bbox) / get_bbox_area(result_bbox)
+    return scale
+
+def align_box_with_plane(points3d, plane_normal_query, plane_normal_result):
+    box_rotation = rotation_matrix_from_vectors(plane_normal_query, plane_normal_result)
+    #plane_normal_query, plane_normal_result, plane_center_query, plane_center_result
+    points_3d_axis = np.dot(points3d-points3d[0],box_rotation)+points3d[0]
+    return points_3d_axis
+
+def get_smooth_scale_factor(points_3d_query, points3d_scaled, intrinsics, alpha):
+    factor = get_scale_factor(points_3d_query, points3d_scaled, intrinsics)    
+    return (alpha+factor-1)/alpha
+
+def get_bounding_box(idx, match_idx, info_df, train_info_df, adjust_scale=False):
+    points_2d_result, points_3d_result = get_points(train_info_df, match_idx)
+    points_2d_px_result = points_2d_to_points2d_px(points_2d_result, 360, 480)
+    points_2d_query, points_3d_query = get_points(info_df, idx)
+    points_2d_px_query = points_2d_to_points2d_px(points_2d_query, 360, 480)
+    plane_center_query, plane_normal_query= get_plane(info_df, idx)
+    plane_center_result, plane_normal_result = get_plane(train_info_df, match_idx)
+    result_bbox = get_bbox(points_2d_px_result, 360, 480) 
+    query_camera = get_camera(info_df, idx)
+    query_intrinsics = get_intrinsics(query_camera)
+    query_intrinsics = scale_intrinsics(query_intrinsics, 0.25,0.25)
+    result_bbox = get_bbox(points_2d_px_result, 360, 480)
+    query_bbox = get_bbox(points_2d_px_query, 360, 480)
+    cx, cy, a, b = estimate_object_center_in_query_image(query_intrinsics, query_bbox, points_2d_px_result)
+    center_ray = np.array([a,b,-1])
+    points_3d_axis = align_box_with_plane(points_3d_result, plane_normal_query, plane_normal_result)
+    obj_radius = get_dist_from_plane(plane_normal_result, plane_center_result, points_3d_axis[0])
+    points_3d_result_snapped = snap_to_plane(points_3d_axis, plane_normal_query, plane_center_query, center_ray, obj_radius)
+    if adjust_scale:
+        scale = get_smooth_scale_factor(points_3d_query, points_3d_result_snapped, query_intrinsics, 2)
+        points3d_scaled = points_3d_result_snapped
+        for i in range(0,4):
+            #print(scale, obj_radius)
+            obj_radius = get_dist_from_plane(plane_normal_query, plane_center_query, points3d_scaled[0])
+            points3d_scaled = snap_to_plane(scale_3d_bbox(points3d_scaled, scale),
+                                                plane_normal_query, plane_center_query, center_ray, obj_radius = obj_radius*scale)
+            scale = get_smooth_scale_factor(points_3d_query, points3d_scaled, query_intrinsics, 2)
+            print(i, get_iou_between_bbox(np.array(points_3d_query), np.array(points3d_scaled)))
+        return points3d_scaled
+    return points_3d_result_snapped
+
+def scale_3d_bbox(bbox, factor):
+    assert factor>0
+    center = bbox[0]
+    bbox = (bbox-center)*factor + center 
+    return bbox
+
+def snap_to_plane(points3d, plane_normal_query, plane_center_query, point_on_center_line, obj_radius=None):
+    #if obj_radius is None:
+    #    obj_radius = get_dist_from_plane(plane_normal_result, plane_center_result, points3d[0])
+    offset = obj_radius * plane_normal_query
+    new_center = intersect_plane_with_line(plane_normal_query, plane_center_query+offset, point_on_center_line) 
+    snapped = points3d - points3d[0] + new_center
+    return snapped
 
 def create_objectron_bbox_from_points(points, color=(0,0,0)):
     assert len(color)==3
@@ -124,7 +231,7 @@ def get_middle_bottom_point(points3d, plane_normal):
 
 def snap_box_to_plane(points3d, plane_normal, plane_center, align_axis=True):
     bottom_middle=get_middle_bottom_point(points3d, plane_normal)
-    intersect = get_intesect_relative_to_camera(plane_normal, plane_center, bottom_middle)
+    intersect = get_intersect_relative_to_camera(plane_normal, plane_center, bottom_middle)
     snapped= points3d-(bottom_middle-intersect)
     if align_axis:
         box_normal = snapped[0] - intersect
@@ -232,7 +339,7 @@ def get_planes_intersections(plane1, plane2, plane3):
     return point[0:3]
 
 #https://en.wikipedia.org/wiki/Line%E2%80%93plane_intersection
-def get_intesect_relative_to_camera(plane_normal, plane_center, point):
+def get_intersect_relative_to_camera(plane_normal, plane_center, point):
     p0 = plane_center
     n = plane_normal
     l0 = np.array([0,0,0]) #camera center
@@ -386,7 +493,7 @@ def get_points(df : pd.DataFrame, idx: int):
         point_3d = (keypoint.point_3d.x, keypoint.point_3d.y, keypoint.point_3d.z)
         points_2d.append(point_2d)
         points_3d.append(point_3d)
-    return points_2d, points_3d
+    return np.array(points_2d), np.array(points_3d)
 
 
 def fix_idx(idx):
@@ -479,7 +586,7 @@ def points_2d_to_points2d_px(points2d:list, width:int, height:int):
         x = point2d[0]*width
         y = point2d[1]*height
         points2d_px.append((x,y))
-    return points2d_px
+    return np.array(points2d_px)
 
 def get_scale_factors(bbox1:tuple, bbox2:tuple):
     """Get x and y scaling factors between 2 bounding boxes.
@@ -530,7 +637,7 @@ def align_with_bbox(train_point2d_px, train_bbox, valid_bbox):
     
     return aligned_points2d_px
 
-def draw_bbox(im: PIL.Image, points2d_px: list, line_color=(0,255,0)):
+def draw_bbox(im: PIL.Image, points2d_px: list, line_color=(0,255,0), pixel_center_color=(0,255,0), object_center_color=(255,0,0)):
     """Draw a projected 2d bounding box (in pixels) over a Pillow Image
 
     Args:
@@ -549,20 +656,21 @@ def draw_bbox(im: PIL.Image, points2d_px: list, line_color=(0,255,0)):
         x, y = point2d_px
         fill=(0,0,255)
         if i==0: #Center point
-            fill=(255,0,0)
+            fill=object_center_color
         draw.ellipse((x-5 , y-5,x+5 , y+5), fill=fill)
     #points2d_px.append((x,y))
     
     x_min, y_min, x_max, y_max = get_bbox(points2d_px, im.width, im.height)
     x_center = (x_max+x_min)/2
     y_center = (y_max+y_min)/2
-    draw.ellipse((x_center-10 , y_center-10,x_center+10 , y_center+10), fill=(0,255,0))
+    draw.ellipse((x_center-10 , y_center-10,x_center+10 , y_center+10), fill=pixel_center_color)
     for edge in EDGES:
         p1, p2 = edge
         x1, y1 = points2d_px[p1]
         x2, y2 = points2d_px[p2]
         draw.line((x1,y1,x2,y2), fill=line_color)
     return im
+import math 
 
 def align_with_bbox_3d(points3d_train: list, train_bbox: tuple, valid_bbox: tuple, 
                         alpha_x=368.0, alpha_y:float=None, verbose=False):
@@ -600,9 +708,12 @@ def align_with_bbox_3d(points3d_train: list, train_bbox: tuple, valid_bbox: tupl
     #y_offset = -dy_px/368*c_z
 
 
-    x_offset = dx_px/alpha_x*c_depth
-    y_offset = dy_px/alpha_y*c_depth
-#    scale_x = 1.2
+    x_offset = math.atan(dx_px/alpha_x*c_depth)
+    y_offset = math.atan(dy_px/alpha_y*c_depth)
+    #x_offset = dx_px/alpha_x*c_depth
+    #y_offset = dy_px/alpha_y*c_depth
+#     
+    scale_x = 1.2
 #    scale_y = 1.2
     for point3d in points3d_train:
         x,y,z = point3d
@@ -656,7 +767,8 @@ def align_with_bbox_3d(points3d_train: list, train_bbox: tuple, valid_bbox: tupl
     #return translated_points3d
     #return rotated_points3d, points3d_train #translated_points3d
     rotated_points3d = list(map(tuple, rotated_points3d))
-    return rotated_points3d, points3d_train
+    return rotated_points3d_v2, points3d_train
+    #return rotated_points3d, points3d_train
 
 def visualize(points3d_query1, points3d_results1, points3d_results2):
     """Small visualisation helper. Interface will change!
@@ -722,13 +834,13 @@ def project_3d_to_2d(points3d, intrinsics):
     y = res[0]
     return np.swapaxes(np.vstack([x, y]),0,1)
 
-def get_match_snapped_points(idx, match_idx,  info_df, train_info_df, ground_truth=False, rescale=True):
+def get_match_snapped_points(idx, match_idx,  info_df, train_info_df, ground_truth=False, rescale=True, align_axis=True):
 
     assert type(match_idx)==int
     plane_center, plane_normal = get_plane(info_df, idx)
     points2d, points3d = get_points(info_df,idx)
     points3d_result_rotated, points3d_result = get_match_aligned_points(idx, match_idx, info_df, train_info_df, ground_truth = ground_truth)
-    snapped, intersect = snap_box_to_plane(points3d_result_rotated, plane_normal, plane_center)
+    snapped, intersect = snap_box_to_plane(points3d_result_rotated, plane_normal, plane_center, align_axis=align_axis)
     
 
     result = snapped
@@ -775,6 +887,7 @@ def get_iou(idx:int, embeddings: np.array, info_df: pd.DataFrame,
             train_embeddings:np.array, train_info_df: pd.DataFrame,
             symmetric=False, rescale=False,
             k=0, show=False, compute_aligned=False, ground_plane=True,
+            align_axis=True
             ):
     """Get 3D IoU for a specific query image, using the kth neighbor.
 
@@ -793,7 +906,7 @@ def get_iou(idx:int, embeddings: np.array, info_df: pd.DataFrame,
     #@concurrent
     match_idx = find_match_idx(idx, embeddings, train_embeddings,k)
     if ground_plane:
-        points3d_processed, points3d_valid = get_match_snapped_points(idx, match_idx, info_df, train_info_df, ground_truth=True, rescale=rescale)
+        points3d_processed, points3d_valid = get_match_snapped_points(idx, match_idx, info_df, train_info_df, ground_truth=True, rescale=rescale, align_axis=align_axis)
     else:
         points3d_processed, points3d_valid = get_match_aligned_points(idx, match_idx, info_df, train_info_df, ground_truth=True)
  
@@ -879,21 +992,46 @@ def find_all_match_idx(query_embeddings: np.ndarray, train_embeddings:np.ndarray
     Returns:
         [type]: [description]
     """
+    global use_cupy
+    print("Using GPU to compute matches!")
+
     if k != 0:
         #best_matches = cp.argsort(-cp.dot(query_embeddings.T,train_embeddings))
         #match_idx = best_matches[k]
         raise ValueError("The case where k is not 0 must be implemented.")
     else:
         match_idxs = []
-        chunk_size = 512
-        print("Using GPU to compute matches!")
-        for i in range(0, len(query_embeddings/chunk_size)):
-            start = i*chunk_size
-            end = start + chunk_size
-            if end > len(query_embeddings):
-                end=len(query_embeddings)
-            match_idx_chunk = cp.argmin(-cp.dot(query_embeddings[start:end],train_embeddings),axis=1)
-            match_idxs+=match_idx_chunk.get().tolist()
+        query_chunk_size = 1024
+        train_chunk_size = 65536*2
+        for i in tqdm(range(0, math.ceil(len(query_embeddings)/query_chunk_size))):
+            query_start = i*query_chunk_size
+            query_end = query_start + query_chunk_size
+            if query_end > len(query_embeddings):
+                query_end=len(query_embeddings)
+            cuda_query_embeddings = cp.array(query_embeddings[query_start:query_end])
+
+            matches = []
+            scores = []
+            best_match_idx_chunk_score = np.zeros((query_end-query_start,1))
+            best_match_idx_chunk = np.zeros((query_end-query_start,1), dtype=np.uint64)
+            for j in range(0,math.ceil(train_embeddings.shape[1]/train_chunk_size)):
+                train_start = j*train_chunk_size
+                train_end = train_start + train_chunk_size
+                if train_end > train_embeddings.shape[1]:
+                    train_end=train_embeddings.shape[1]
+                cuda_train_embeddings = cp.array(train_embeddings[:,train_start:train_end])
+                similarity = cp.dot(cuda_query_embeddings,cuda_train_embeddings)
+                match_idx_chunk = cp.argmax(similarity,axis=1)
+                match_idx_chunk_score = np.take_along_axis(similarity.get(),np.expand_dims(match_idx_chunk.get(),axis=1),axis=1)
+                match_idx_chunk+=train_start
+                best_match_idx_chunk = np.where(match_idx_chunk_score>best_match_idx_chunk_score, np.expand_dims(match_idx_chunk.get(), axis=1), best_match_idx_chunk).astype(np.uint64)
+                best_match_idx_chunk_score = np.where(match_idx_chunk_score>best_match_idx_chunk_score,match_idx_chunk_score,best_match_idx_chunk_score)
+                
+                #if use_cupy:
+                match_idx_chunk=match_idx_chunk.get()
+
+                matches.append(match_idx_chunk)
+            match_idxs+=best_match_idx_chunk.squeeze().tolist()
         return match_idxs
 
 def scale_intrinsics(intrinsics: np.array, scale_x: float, scale_y:float):
@@ -985,7 +1123,7 @@ def get_iou_mp(idx:int #, symmetric=False, rescale=False,
         match_idx = match_idx[0]
 
     if args.ground_plane:
-        points3d_processed, points3d_valid = get_match_snapped_points(idx, match_idx, info_df, train_info_df, ground_truth=True, rescale=args.rescale)
+        points3d_processed, points3d_valid = get_match_snapped_points(idx, match_idx, info_df, train_info_df, ground_truth=True, rescale=args.rescale, align_axis=not args.no_align_axis)
     else:
         points3d_processed, points3d_valid = get_match_aligned_points(idx, match_idx, info_df, train_info_df, ground_truth=True)
     
@@ -1000,7 +1138,7 @@ def get_iou_mp(idx:int #, symmetric=False, rescale=False,
     return best_iou , idx, match_idx
 #@synchronized
 def main():
-    global args, info_df, embeddings, train_info_df, train_embeddings, ground_plane, symmetric, rescale, all_match_idxs
+    global args, info_df, embeddings, train_info_df, train_embeddings, ground_plane, symmetric, rescale, all_match_idxs, use_cupy
     """Command line tool for evaluating zero shot pose estimation
     on objectron."""
     parser = argparse.ArgumentParser(description='Command line tool for evaluating zero shot pose estimation on objectron.')
@@ -1014,9 +1152,13 @@ def main():
     parser.add_argument("--random_bbox_same", action="store_true", help="Fit a randomly selected bbox from same category instead of the nearest neighbor")
     parser.add_argument("--trainset_ratio", type=float, default=1, help="Ratio of the training set sequences used for inference")
     parser.add_argument("--single_thread", action="store_true", help="Disable multithreading.")
+    parser.add_argument("--cpu", action="store_true", help="Disable cuda accelaration.")
+    parser.add_argument("--no_align_axis", action="store_true", help="Don't to to align axis with ground plane.")
     args = parser.parse_args()
     symmetric = args.symmetric
     rescale = args.rescale
+    if args.cpu:
+        use_cupy=False
     embeddings, info_df, train_embeddings, train_info_df = read_experiment(args.experiment)
     all_match_idxs = find_all_match_idx(embeddings, train_embeddings, 0)
     get_iou_mp(1)
