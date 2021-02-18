@@ -238,6 +238,8 @@ class SimSiam(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         assert len(batch["OBJ_CROPS"]) == 2
         img_1, img_2 = batch["OBJ_CROPS"]
+
+        #assert img_1.shape==torch.Size([32, 3, 224, 224])
         uid = batch["UID"]
         y = batch["CAT_ID"]
 
@@ -250,9 +252,10 @@ class SimSiam(pl.LightningModule):
 
         base = batch_idx*self.batch_size
         train_features= F.normalize(f1.detach(), dim=1).cpu()
+        #assert train_features.shape == torch.Size([32, 2048])
         self.train_meta+=uid
-        self.train_features[base:base+len(img_1)]=train_features
-        self.train_targets[base:base+len(img_1)]=y
+        self.train_features[base:base+train_features.shape[0]]=train_features
+        self.train_targets[base:base+train_features.shape[0]]=y
         # log results
         self.log("train_loss", loss)
         return loss

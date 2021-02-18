@@ -148,6 +148,8 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger):
             batch_size=hyper_params["batch_size"],
             num_workers=hyper_params["num_workers"],
         )
+        dm.setup()
+
     elif args.data_module=="file":
         dm = selfsupmotion.data.objectron.file_datamodule.ObjectronFileDataModule(
             num_workers=hyper_params["num_workers"],
@@ -160,7 +162,7 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger):
 
     if "num_samples" not in hyper_params:  
         if hasattr(dm, "train_sample_count"):
-            hyper_params["num_samples"] = dm.train_sample_count
+            hyper_params["num_samples"] = len(dm.train_dataset)
         elif hasattr(dm, "train_dataset"):
             hyper_params["num_samples"] = len(dm.train_dataset)
         else:
@@ -168,7 +170,7 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger):
 
     if "num_samples_valid" not in hyper_params:
         if hasattr(dm, "valid_sample_count"):
-            hyper_params["num_samples_valid"] = dm.valid_sample_count
+            hyper_params["num_samples_valid"] = len(dm.val_dataset)
         elif hasattr(dm, "val_dataset"):
             hyper_params["num_samples_valid"] = len(dm.val_dataset)
         else:

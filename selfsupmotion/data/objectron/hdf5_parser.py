@@ -265,41 +265,84 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
         self.train_sample_count = len(seq_subset_idxs) - self.valid_sample_count
         self.valid_seq_subset = sorted([dataset.seq_subset[idx] for idx in seq_subset_idxs[:self.valid_sample_count]])
         self.train_seq_subset = sorted([dataset.seq_subset[idx] for idx in seq_subset_idxs[self.valid_sample_count:]])
+        self.train_dataset = None
+        self.valid_dataset = None
+        self.train_transforms = None
+        self.val_transforms = None
         assert len(np.intersect1d(self.valid_seq_subset, self.train_seq_subset)) == 0
         assert self.train_sample_count > 0 and self.valid_sample_count > 0
 
-    def _create_dataloader(
-            self,
-            train: bool = True,
-            transforms: typing.Optional[typing.Any] = None,
-    ) -> torch.utils.data.DataLoader:
-        return torch.utils.data.DataLoader(
-            dataset=ObjectronHDF5FrameTupleParser(
+    def setup(self, stage= None):
+        if self.val_transforms is None:
+            self.val_transforms = self.val_transform()
+        if self.train_transforms is None:
+            self.train_transforms = self.train_transform()
+
+        self.val_dataset = ObjectronHDF5FrameTupleParser(
                 hdf5_path=self.hdf5_path,
-                seq_subset=self.train_seq_subset if train else self.valid_seq_subset,
+                seq_subset=self.valid_seq_subset,
                 tuple_length=self.tuple_length,
                 frame_offset=self.frame_offset,
                 tuple_offset=self.tuple_offset,
                 _target_fields=["IMAGE", "CENTROID_2D_IM"],
-                _transforms=transforms,
-            ),
+                _transforms=self.val_transforms,
+            )
+
+        self.train_dataset = ObjectronHDF5FrameTupleParser(
+                hdf5_path=self.hdf5_path,
+                seq_subset=self.train_seq_subset,
+                tuple_length=self.tuple_length,
+                frame_offset=self.frame_offset,
+                tuple_offset=self.tuple_offset,
+                _target_fields=["IMAGE", "CENTROID_2D_IM"],
+                _transforms=self.train_transforms,
+            )
+
+    #def _create_dataloader(
+    #        self,
+    #        dataset,
+    #        transforms: typing.Optional[typing.Any] = None,
+    #) -> torch.utils.data.DataLoader:
+        #dataset  = dataset=ObjectronHDF5FrameTupleParser(
+        #        hdf5_path=self.hdf5_path,
+        #        seq_subset=self.train_seq_subset if train else self.valid_seq_subset,
+        #        tuple_length=self.tuple_length,
+        #        frame_offset=self.frame_offset,
+        #        tuple_offset=self.tuple_offset,
+        #        _target_fields=["IMAGE", "CENTROID_2D_IM"],
+        #        _transforms=transforms,
+        #    )
+        #if train:
+        #    self.train_dataset = dataset #Save the dataset reference so we can know the sample count!
+        #else:
+        #    self.valid_dataset = dataset
+        #return torch.utils.data.DataLoader(
+        #    dataset,
+        #    batch_size=self.batch_size,
+        #    shuffle=train,
+        #    num_workers=self.num_workers,
+        #    drop_last=self.drop_last,
+        #    pin_memory=self.pin_memory
+        #)
+
+    def train_dataloader(self) -> torch.utils.data.DataLoader:
+        return torch.utils.data.DataLoader(
+            self.train_dataset,
             batch_size=self.batch_size,
-            shuffle=train,
+            shuffle=True,
             num_workers=self.num_workers,
             drop_last=self.drop_last,
             pin_memory=self.pin_memory
         )
 
-    def train_dataloader(self) -> torch.utils.data.DataLoader:
-        return self._create_dataloader(
-            train=True,
-            transforms=self.train_transform() if self.train_transforms is None else self.train_transforms,
-        )
-
     def val_dataloader(self) -> torch.utils.data.DataLoader:
-        return self._create_dataloader(
-            train=False,
-            transforms=self.val_transform() if self.val_transforms is None else self.val_transforms,
+        return torch.utils.data.DataLoader(
+            self.val_dataset,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=self.num_workers,
+            drop_last=self.drop_last,
+            pin_memory=self.pin_memory
         )
 
     def train_transform(self):
