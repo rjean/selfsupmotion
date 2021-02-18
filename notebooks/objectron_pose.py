@@ -11,6 +11,8 @@ import sys
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 import scipy.spatial as sp
+import selfsupmotion.zero_shot_pose as zsp
+zsp.use_cupy = False
 #import pythreejs as threejs
 #from pythreejs import *
 
@@ -21,7 +23,7 @@ if module_path not in sys.path:
 from selfsupmotion.data.objectron.dataset import iou
 from selfsupmotion.data.objectron.dataset import box
 
-import selfsupmotion.zero_shot_pose as zsp
+
 # %%
 import pandas as pd
 from PIL import Image
@@ -52,7 +54,7 @@ import random
 #info_df_subset = info_df_subset.reset_index()
 #return info_df_subset, embeddings_subset
 
-train_info_df_subset, train_embeddings_subset = zsp.get_subset(train_info_df, train_embeddings.get(), 0.1)
+train_info_df_subset, train_embeddings_subset = zsp.get_subset(train_info_df, train_embeddings, 0.1)
 train_info_df_subset
 # %%
 sequence_annotations = zsp.get_sequence_annotations(info_df.iloc[1]["category"], info_df.iloc[1]["batch_number"], info_df.iloc[1]["sequence_number"])
@@ -77,12 +79,12 @@ Image.open(train_info_df.iloc[idx]["filepath"])
 
 
 # %%
-idx=36000
+idx=36050
 points_2d, _ = zsp.get_points(info_df, idx)
 im=Image.open(info_df.iloc[idx]["filepath_full"])
 zsp.draw_bbox(im,zsp.points_2d_to_points2d_px(points_2d, im.width, im.height))
 # %%
-best_matches = np.argsort(-np.dot(embeddings[idx].T,train_embeddings)).get()
+best_matches = np.argsort(-np.dot(embeddings[idx].T,train_embeddings))
 points_2d, _ = zsp.get_points(train_info_df, best_matches[0])
 train_im=Image.open(train_info_df.iloc[best_matches[0]]["filepath_full"])
 
@@ -160,9 +162,10 @@ for idx in tqdm(subset):
     ious.append(iou_value)
 
 ious = np.array(ious)
-np.median(ious), ious.mean(), valid_count/len(subset)
 
 assert ious.mean() > 0.25
+# %%
+np.median(ious), ious.mean(), valid_count/len(subset)
 
 # %%
 
@@ -375,6 +378,21 @@ camera_box = zsp.get_cube(1/20, center=(0,0,0))
 camera_box[0]*=1.02
 match_idx = zsp.find_match_idx(idx, embeddings, train_embeddings,k=0)
 points3d_result_rotated, points3d_result =  zsp.get_match_aligned_points(idx, match_idx, info_df, train_info_df)
+bottom_middle=zsp.get_middle_bottom_point(np.array(points3d), plane_normal)
+intersect = zsp.get_intersect_relative_to_camera(plane_normal, plane_center, bottom_middle)
+snapped= points3d-(bottom_middle-intersect)
+if True:
+    box_normal = snapped[0] - intersect
+    #box_normal[0]=-box_normal
+    box_rotation = zsp.rotation_matrix_from_vectors(box_normal, plane_normal)
+    pcd_snapped = o3d.geometry.PointCloud()
+    pcd_snapped.points = o3d.utility.Vector3dVector(np.array(snapped))
+    pcd_snapped.rotate(box_rotation, intersect)
+    snapped_rotated = np.array(pcd_snapped.points)
+    snapped = snapped_rotated
+
+visualize_point_cloud_in_bboxes(snapped,plane_rect)
+# %%
 snapped, intersect = zsp.snap_box_to_plane(points3d_result_rotated, plane_normal, plane_center)
 #snapped[0]=intersect
 box_normal = snapped[0] - intersect
