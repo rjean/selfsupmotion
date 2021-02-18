@@ -5,6 +5,7 @@ import logging
 import os
 import shutil
 import sys
+from pytorch_lightning.cluster_environments import torchelastic_environment
 import yaml
 
 from yaml import load
@@ -19,8 +20,15 @@ from selfsupmotion.utils.logging_utils import LoggerWriter, log_exp_details
 from selfsupmotion.utils.reproducibility_utils import set_seed
 
 import selfsupmotion.data.objectron.hdf5_parser
+import selfsupmotion.data.objectron.file_datamodule
+
+from torch.cuda.amp import autocast
+from torchvision.transforms.functional import resize
 
 logger = logging.getLogger(__name__)
+
+#import faulthandler
+#faulthandler.enable()
 
 
 def main():
@@ -38,6 +46,7 @@ def main():
                         help='config file with generic hyper-parameters,  such as optimizer, '
                              'batch_size, ... -  in yaml format')
     parser.add_argument('--data', help='path to data', required=True)
+    parser.add_argument('--data-module', default="hdf5", help="Data module to use. file or hdf5")
     parser.add_argument('--tmp-folder',
                         help='will use this folder as working folder - it will copy the input data '
                              'here, generate results here, and then copy them back to the output '
@@ -48,6 +57,11 @@ def main():
     parser.add_argument('--start-from-scratch', action='store_true',
                         help='will not load any existing saved model - even if present')
     parser.add_argument('--debug', action='store_true')
+    parser.add_argument("--embeddings-device",type=str,default="cuda",help="Which device to use for embeddings generation.")
+    parser.add_argument('--embeddings', action='store_true',help="Skip training and generate embeddings for evaluation.")
+    parser.add_argument('--embeddings-ckpt', type=str, default=None, help="Checkpoint to load when generating embeddings.")
+    parser.add_argument("--dryrun", action="store_true", help="Dry-run by training on the validtion set. Use only to test loop code.")
+    
 
     parser = pl.Trainer.add_argparse_args(parser)
 
@@ -115,31 +129,131 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger):
     if hyper_params["seed"] is not None:
         set_seed(hyper_params["seed"])
 
+    if "precision" not in hyper_params:
+        hyper_params["precision"]=16
+
     log_exp_details(os.path.realpath(__file__), args)
 
     if not data_dir.endswith(".hdf5"):
         data_dir = os.path.join(data_dir, "extract_s5_raw.hdf5")
-    dm = selfsupmotion.data.objectron.hdf5_parser.ObjectronFramePairDataModule(
-        hdf5_path=data_dir,
-        tuple_length=hyper_params.get("tuple_length", 2),
-        frame_offset=hyper_params.get("frame_offset", 1),
-        tuple_offset=hyper_params.get("tuple_offset", 2),
-        input_height=hyper_params.get("input_height", 224),
-        gaussian_blur=hyper_params.get("gaussian_blur", True),
-        jitter_strength=hyper_params.get("jitter_strength", 1.0),
-        batch_size=hyper_params["batch_size"],
-        num_workers=hyper_params["num_workers"],
-    )
-    if "num_samples" not in hyper_params:
-        # the model impl uses the sample count to prepare scheduled LR values in advance
-        hyper_params["num_samples"] = dm.train_sample_count
+    if args.data_module=="hdf5":
+        dm = selfsupmotion.data.objectron.hdf5_parser.ObjectronFramePairDataModule(
+            hdf5_path=data_dir,
+            tuple_length=hyper_params.get("tuple_length", 2),
+            frame_offset=hyper_params.get("frame_offset", 1),
+            tuple_offset=hyper_params.get("tuple_offset", 2),
+            input_height=hyper_params.get("input_height", 224),
+            gaussian_blur=hyper_params.get("gaussian_blur", True),
+            jitter_strength=hyper_params.get("jitter_strength", 1.0),
+            batch_size=hyper_params["batch_size"],
+            num_workers=hyper_params["num_workers"],
+        )
+    elif args.data_module=="file":
+        dm = selfsupmotion.data.objectron.file_datamodule.ObjectronFileDataModule(
+            num_workers=hyper_params["num_workers"],
+            batch_size=hyper_params["batch_size"],
+            pairing=hyper_params["pairing"],
+            dryrun=args.dryrun)
+        dm.setup() #In order to have the sample count.
+    else:
+        raise ValueError(f"Invalid datamodule specified on CLI : {args.data_module}")
 
-    model = load_model(hyper_params)
+    if "num_samples" not in hyper_params:  
+        if hasattr(dm, "train_sample_count"):
+            hyper_params["num_samples"] = dm.train_sample_count
+        elif hasattr(dm, "train_dataset"):
+            hyper_params["num_samples"] = len(dm.train_dataset)
+        else:
+            hyper_params["num_samples"] = None
 
-    train(model=model, optimizer=None, loss_fun=None, datamodule=dm,
-          patience=hyper_params['patience'], output=output_dir,
-          max_epoch=hyper_params['max_epoch'], use_progress_bar=not args.disable_progressbar,
-          start_from_scratch=args.start_from_scratch, mlf_logger=mlf_logger)
+    if "num_samples_valid" not in hyper_params:
+        if hasattr(dm, "valid_sample_count"):
+            hyper_params["num_samples_valid"] = dm.valid_sample_count
+        elif hasattr(dm, "val_dataset"):
+            hyper_params["num_samples_valid"] = len(dm.val_dataset)
+        else:
+            hyper_params["num_samples_valid"] = None
+
+    if "early_stop_metric" not in hyper_params:
+        hyper_params["early_stop_metric"]="val_loss"
+
+    if args.embeddings:
+        if args.embeddings_ckpt is None:
+            raise ValueError("Please manually provide the checkpoints using the --embeddings-ckpt argument")
+        model = load_model(hyper_params, checkpoint=args.embeddings_ckpt)
+        #model.load_from_checkpoint(args.embeddings_ckpt)
+        generate_embeddings(args, model, datamodule=dm,train=True, image_size=hyper_params["image_size"])
+        generate_embeddings(args, model, datamodule=dm,train=False, image_size=hyper_params["image_size"])
+    else:
+        model = load_model(hyper_params)
+        train(model=model, optimizer=None, loss_fun=None, datamodule=dm,
+              patience=hyper_params['patience'], output=output_dir,
+              max_epoch=hyper_params['max_epoch'], use_progress_bar=not args.disable_progressbar,
+              start_from_scratch=args.start_from_scratch, mlf_logger=mlf_logger, precision=hyper_params["precision"],
+              early_stop_metric = hyper_params["early_stop_metric"]
+              )
+
+import torch
+from tqdm import tqdm
+import torch.nn.functional as F 
+import numpy as np
+
+def generate_embeddings(args, model, datamodule, train=True, image_size=224):
+    if train:
+        dataloader = datamodule.train_dataloader(evaluation=True) #Do not use data augmentation for evaluation.
+        dataset  = datamodule.train_dataset
+        prefix="train_"
+    else:
+        dataloader = datamodule.val_dataloader(evaluation=True)
+        dataset = datamodule.val_dataset
+        prefix=""
+
+    encoder, projector = model.online_network.encoder, model.online_network.projector
+    local_progress=tqdm(dataloader)
+    
+    model.online_network=model.online_network.to(args.embeddings_device)
+    #max_batch = int(args.subset_size*len(dataset)/args.batch_size)
+    all_features = torch.zeros((model.online_network.encoder.fc.in_features, len(dataset))).cuda()
+        #train_features = torch.zeros((encoder.fc.in_features, max_batch*args.batch_size))
+        
+    #train_labels = torch.zeros(max_batch*args.batch_size, dtype=torch.int64).cuda()
+    all_targets = []
+    sequence_uids = []
+    with torch.no_grad():
+        batch_num = 0
+        for batch in local_progress:
+            images1 = batch["OBJ_CROPS"][0]
+            meta = batch["UID"]
+            targets = batch["CLASS"]
+            #images1, _, meta= data
+            #images1, _ = images
+            images1 = images1.to(args.embeddings_device, non_blocking=True)
+            #meta = labels[1:]
+            #targets = labels[0]
+            base = batch_num*dataloader.batch_size
+
+            #with autocast():
+            model.online_network.zero_grad()
+            #projector.zero_grad()
+            #images1 = resize(images1,image_size)
+            #_, z1, h1 = model.online_network(images1)
+            #features= projector(encoder(images1)[0])
+            #features = z1
+            features = model.online_network.encoder(images1)[0]
+
+                #features=encoder(images)[0]
+            features = F.normalize(features, dim=1)
+            all_features[:,base:base+len(images1)]=features.t().cpu()
+            #train_labels[base:base+len(images)]=labels
+            all_targets += targets.cpu().numpy().tolist()
+            sequence_uids += meta
+            batch_num+=1
+            #if batch_num >= max_batch:
+            #    break
+    
+    np.save(f"{args.output}/{prefix}embeddings.npy",all_features.cpu().numpy())
+    train_info = np.vstack([np.array(all_targets),np.array(sequence_uids)])
+    np.save(f"{args.output}/{prefix}info.npy", train_info)
 
 
 if __name__ == '__main__':

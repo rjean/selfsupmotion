@@ -9,10 +9,133 @@ from pytorch_lightning.utilities import AMPType
 from torch.optim.optimizer import Optimizer
 
 from pl_bolts.models.self_supervised.resnets import resnet18, resnet50
-from pl_bolts.models.self_supervised.simsiam.models import SiameseArm
+#from pl_bolts.models.self_supervised.simsiam.models import SiameseArm
 from pl_bolts.optimizers.lars_scheduling import LARSWrapper
 
+import torch.nn.functional as F 
+import torch.nn as nn
+from typing import Optional, Tuple
+
 logger = logging.getLogger(__name__)
+
+#Credit: https://github.com/PatrickHua/SimSiam
+class ProjectionMLP(nn.Module):
+    def __init__(self, in_dim, hidden_dim=2048, out_dim=2048):
+        super().__init__()
+        ''' page 3 baseline setting
+        Projection MLP. The projection MLP (in f) has BN ap-
+        plied to each fully-connected (fc) layer, including its out- 
+        put fc. Its output fc has no ReLU. The hidden fc is 2048-d. 
+        This MLP has 3 layers.
+        '''
+        self.layer1 = nn.Sequential(
+            nn.Linear(in_dim, hidden_dim),
+            nn.BatchNorm1d(hidden_dim),
+            nn.ReLU(inplace=True)
+        )
+        self.layer2 = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.BatchNorm1d(hidden_dim),
+            nn.ReLU(inplace=True)
+        )
+        self.layer3 = nn.Sequential(
+            nn.Linear(hidden_dim, out_dim),
+            nn.BatchNorm1d(hidden_dim)
+        )
+        self.num_layers = 3
+    def set_layers(self, num_layers):
+        self.num_layers = num_layers
+
+    def forward(self, x):
+        if self.num_layers == 3:
+            x = self.layer1(x)
+            x = self.layer2(x)
+            x = self.layer3(x)
+        elif self.num_layers == 2:
+            x = self.layer1(x)
+            x = self.layer3(x)
+        else:
+            raise Exception
+        return x 
+
+#Credit: https://github.com/PatrickHua/SimSiam
+class PredictionMLP(nn.Module):
+    def __init__(self, in_dim=2048, hidden_dim=512, out_dim=2048): # bottleneck structure
+        super().__init__()
+        ''' page 3 baseline setting
+        Prediction MLP. The prediction MLP (h) has BN applied 
+        to its hidden fc layers. Its output fc does not have BN
+        (ablation in Sec. 4.4) or ReLU. This MLP has 2 layers. 
+        The dimension of h’s input and output (z and p) is d = 2048, 
+        and h’s hidden layer’s dimension is 512, making h a 
+        bottleneck structure (ablation in supplement). 
+        '''
+        self.layer1 = nn.Sequential(
+            nn.Linear(in_dim, hidden_dim),
+            nn.BatchNorm1d(hidden_dim),
+            nn.ReLU(inplace=True)
+        )
+        self.layer2 = nn.Linear(hidden_dim, out_dim)
+        """
+        Adding BN to the output of the prediction MLP h does not work
+        well (Table 3d). We find that this is not about collapsing. 
+        The training is unstable and the loss oscillates.
+        """
+
+    def forward(self, x):
+        x = self.layer1(x)
+        x = self.layer2(x)
+        return x 
+
+class MLP(nn.Module):
+    def __init__(self, input_dim: int = 2048, hidden_size: int = 4096, output_dim: int = 256) -> None:
+        super().__init__()
+        self.output_dim = output_dim
+        self.input_dim = input_dim
+        self.model = nn.Sequential(
+            nn.Linear(input_dim, hidden_size, bias=False),
+            nn.BatchNorm1d(hidden_size),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_size, output_dim, bias=True),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.model(x)
+        return x
+
+class SiameseArm(nn.Module):
+
+    def __init__(
+        self,
+        encoder: Optional[nn.Module] = None,
+        input_dim: int = 2048,
+        hidden_size: int = 4096,
+        output_dim: int = 256,
+        hua_mlp = True,
+    ) -> None:
+        super().__init__()
+
+        if encoder is None:
+            raise ValueError("Please provide an encoder.")
+        # Encoder
+        self.encoder = encoder
+        input_dim = self.encoder.fc.in_features
+        # Projector
+        if hua_mlp: #Using Patrick Hua interpretation of SimSiam.
+            #Will use an additional hidden layer. Linear layer will have bias.
+            self.projector = ProjectionMLP(input_dim, output_dim, output_dim)
+            self.predictor = PredictionMLP(output_dim, hidden_size, output_dim)
+        else:       #Pytorch Lighting interepreation of SimSiam
+            self.projector = MLP(input_dim, hidden_size, output_dim)
+            self.predictor = MLP(output_dim, hidden_size, output_dim)
+        # Predictor
+        
+
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        y = self.encoder(x)[0]
+        z = self.projector(y)
+        h = self.predictor(z)
+        return y, z, h
 
 
 class SimSiam(pl.LightningModule):
@@ -28,6 +151,7 @@ class SimSiam(pl.LightningModule):
         self.num_nodes = hyper_params.get("num_nodes", 1)
         self.backbone = hyper_params.get("backbone", "resnet50")
         self.num_samples = hyper_params.get("num_samples")
+        self.num_samples_valid = hyper_params.get("num_samples_valid")
         self.batch_size = hyper_params.get("batch_size")
 
         self.hidden_mlp = hyper_params.get("hidden_mlp", 2048)
@@ -68,6 +192,11 @@ class SimSiam(pl.LightningModule):
 
         self.lr_schedule = np.concatenate((warmup_lr_schedule, cosine_lr_schedule))
 
+        #self.log("val_loss",0)
+        #self.log("train_loss", 0)
+
+
+
     def init_model(self):
         assert self.backbone in ["resnet18", "resnet50"]
         if self.backbone == "resnet18":
@@ -75,47 +204,89 @@ class SimSiam(pl.LightningModule):
         else:
             backbone = resnet50
 
-        encoder = backbone(first_conv=self.first_conv, maxpool1=self.maxpool1, return_all_feature_maps=False)
+        backbone_network = backbone(first_conv=self.first_conv, maxpool1=self.maxpool1, return_all_feature_maps=False)
         self.online_network = SiameseArm(
-            encoder, input_dim=self.hidden_mlp, hidden_size=self.hidden_mlp, output_dim=self.feat_dim
+            backbone_network, input_dim=self.hidden_mlp, hidden_size=self.hidden_mlp, output_dim=self.feat_dim
         )
+        #max_batch = math.ceil(self.num_samples/self.batch_size)
+        encoder, projector = self.online_network.encoder, self.online_network.projector
+        self.feature_dim = self.online_network.encoder.fc.in_features
+        self.train_features = torch.zeros((self.num_samples, self.feature_dim))
+        self.train_meta = []
+        self.train_targets = -torch.ones((self.num_samples))
+        self.valid_features = torch.zeros((self.num_samples_valid, self.feature_dim))
+        self.valid_meta = []
+        self.cuda_train_features = None
+        
 
     def forward(self, x):
         y, _, _ = self.online_network(x)
         return y
 
-    def cosine_similarity(self, a, b):
-        b = b.detach()  # stop gradient of backbone + projection mlp
-        a = torch.nn.functional.normalize(a, dim=-1)
-        b = torch.nn.functional.normalize(b, dim=-1)
-        sim = -1 * (a * b).sum(-1).mean()
+    def cosine_similarity(self, a, b, version="simplified"):
+        if version == "original":
+            b = b.detach()  # stop gradient of backbone + projection mlp
+            a = F.normalize(a, dim=-1)
+            b = F.normalize(b, dim=-1)
+            sim = -1 * (a * b).sum(-1).mean()
+        elif version=="simplified":
+            sim = -F.cosine_similarity(a, b.detach(), dim=-1).mean()
+        else:
+            raise ValueError(f"Unsupported cosine similarity version: {version}")
         return sim
 
     def training_step(self, batch, batch_idx):
         assert len(batch["OBJ_CROPS"]) == 2
         img_1, img_2 = batch["OBJ_CROPS"]
+        uid = batch["UID"]
+        y = batch["CAT_ID"]
 
+        if self.cuda_train_features is not None:
+            self.cuda_train_features = None #Free GPU memory
         # Image 1 to image 2 loss
-        _, z1, h1 = self.online_network(img_1)
-        _, z2, h2 = self.online_network(img_2)
+        f1, z1, h1 = self.online_network(img_1)
+        f2, z2, h2 = self.online_network(img_2)
         loss = self.cosine_similarity(h1, z2) / 2 + self.cosine_similarity(h2, z1) / 2
 
+        base = batch_idx*self.batch_size
+        train_features= F.normalize(f1.detach(), dim=1).cpu()
+        self.train_meta+=uid
+        self.train_features[base:base+len(img_1)]=train_features
+        self.train_targets[base:base+len(img_1)]=y
         # log results
         self.log("train_loss", loss)
-
         return loss
 
     def validation_step(self, batch, batch_idx):
         assert len(batch["OBJ_CROPS"]) == 2
         img_1, img_2 = batch["OBJ_CROPS"]
+        uid = batch["UID"]
+        y = batch["CAT_ID"]
 
         # Image 1 to image 2 loss
-        _, z1, h1 = self.online_network(img_1)
-        _, z2, h2 = self.online_network(img_2)
+        f1, z1, h1 = self.online_network(img_1)
+        f2, z2, h2 = self.online_network(img_2)
+        if self.cuda_train_features is None: #Transfer to GPU once.
+            self.cuda_train_features = self.train_features.cuda()
+
         loss = self.cosine_similarity(h1, z2) / 2 + self.cosine_similarity(h2, z1) / 2
+
+        self.valid_meta+=uid
+        base = batch_idx*self.batch_size
+
+        valid_features = F.normalize(f1, dim=1).detach()
+
+        similarity = torch.mm(valid_features, self.cuda_train_features.T)
+        targets_idx= torch.argmax(similarity,axis=1).cpu()
+        neighbor_targets = self.train_targets[targets_idx]
+        match_count = (neighbor_targets==y.cpu()).sum()
+        accuracy = match_count/len(neighbor_targets)
+
+        self.valid_features[base:base+len(img_1)]=valid_features
 
         # log results
         self.log("val_loss", loss)
+        self.log("val_accuracy", accuracy)
 
         return loss
 
@@ -148,6 +319,19 @@ class SimSiam(pl.LightningModule):
         else:
             params = self.parameters()
 
+        predictor_prefix = ('encoder')
+        backbone_and_encoder_parameters = [param for name, param in self.online_network.encoder.named_parameters()]
+        backbone_and_encoder_parameters+= [param for name, param in self.online_network.projector.named_parameters()]
+        lr = self.learning_rate
+        params = [{
+                'name': 'base',
+                'params': backbone_and_encoder_parameters,
+                'lr': lr
+            },{
+                'name': 'predictor',
+                'params': [param for name, param in self.online_network.predictor.named_parameters()],
+                'lr': lr
+            }]
         if self.optim == 'sgd':
             optimizer = torch.optim.SGD(params, lr=self.learning_rate, momentum=0.9, weight_decay=self.weight_decay)
         elif self.optim == 'adam':
@@ -180,16 +364,20 @@ class SimSiam(pl.LightningModule):
                 param_group["lr"] = self.lr_schedule[self.trainer.global_step]
         else:
             for param_group in optimizer.param_groups:
-                param_group["lr"] = self.lr_schedule[self.trainer.global_step]
+                if param_group["name"]=="predictor":
+                    param_group["lr"] = self.learning_rate
+                else:
+                    param_group["lr"] = self.lr_schedule[self.trainer.global_step]
+            #param_group[0]["lr"]
 
         # log LR (LearningRateLogger callback doesn't work with LARSWrapper)
         self.log('learning_rate', self.lr_schedule[self.trainer.global_step], on_step=True, on_epoch=False)
 
         # from lightning
-        if self.trainer.amp_backend == AMPType.NATIVE:
-            optimizer_closure()
-            self.trainer.scaler.step(optimizer)
-        elif self.trainer.amp_backend == AMPType.APEX:
+        #if self.trainer.amp_backend == AMPType.NATIVE:
+        #    optimizer_closure()
+        #    self.trainer.scaler.step(optimizer)
+        if self.trainer.amp_backend == AMPType.APEX:
             optimizer_closure()
             optimizer.step()
         else:

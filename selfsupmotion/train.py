@@ -49,7 +49,9 @@ def load_stats(output):
 
 def train(**kwargs):  # pragma: no cover
     """Training loop wrapper. Used to catch exception if Orion is being used."""
+    best_dev_metric = train_impl(**kwargs)
     try:
+        pass
         best_dev_metric = train_impl(**kwargs)
     except RuntimeError as err:
         if orion.client.IS_ORION_ON and 'CUDA out of memory' in str(err):
@@ -107,7 +109,9 @@ def train_impl(
         max_epoch,
         use_progress_bar,
         start_from_scratch,
-        mlf_logger
+        mlf_logger,
+        precision,
+        early_stop_metric
 ):  # pragma: no cover
     """Main training loop implementation.
 
@@ -151,7 +155,9 @@ def train_impl(
         logger.info('starting training from scratch')
         resume_from_checkpoint = None
 
-    early_stopping = pl.callbacks.EarlyStopping("val_loss", mode="auto", patience=patience, verbose=use_progress_bar)
+    #if 
+
+    early_stopping = pl.callbacks.EarlyStopping(early_stop_metric, mode="auto", patience=patience, verbose=use_progress_bar)
     printer_callback = pl_bolts.callbacks.PrintTableMetricsCallback()
 
     trainer = pl.Trainer(
@@ -168,6 +174,8 @@ def train_impl(
         resume_from_checkpoint=resume_from_checkpoint,
         gpus=torch.cuda.device_count(),
         auto_select_gpus=True,
+        precision=precision,
+        amp_level="O1",
         accelerator=None,  # @@@@@@@@@ TODO CHECK ME OUT w/ precision arg too
     )
 

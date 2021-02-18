@@ -1,4 +1,4 @@
-batch_size: 96
+batch_size: 32
 optimizer: sgd
 learning_rate: 0.03
 weight_decay: 0.0005
@@ -17,6 +17,9 @@ max_epoch: 100
 image_size: 224
 exp_name: temp
 gpus: 1
-num_workers: 2
+num_workers: 16
 seed: None
+precision: 16
 early_stop_metric: val_accuracy
+
+

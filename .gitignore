@@ -3,6 +3,8 @@ mlruns
 lightning_logs
 
 # Ignore example outputs
+examples/*/output/
+datasets/
 examples/*/output*/
 
 # Byte-compiled / optimized / DLL files
