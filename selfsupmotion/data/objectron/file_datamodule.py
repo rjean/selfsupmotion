@@ -225,7 +225,7 @@ class ObjectronDataset(torch.utils.data.Dataset):
         sample["OBJ_CROPS"] = (image1, image2)
         uid = self.samples[idx]["category"] + "-" + self.samples[idx]["sequence"] + "-" + str(self.samples[idx]["frame_id"])
         sample["UID"] = uid
-        sample["CLASS"] = self.categories.index(category)
+        sample["CAT_ID"] = self.categories.index(category)
         return sample
         
 

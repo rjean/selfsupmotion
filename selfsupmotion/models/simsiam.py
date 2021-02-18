@@ -239,7 +239,7 @@ class SimSiam(pl.LightningModule):
         assert len(batch["OBJ_CROPS"]) == 2
         img_1, img_2 = batch["OBJ_CROPS"]
         uid = batch["UID"]
-        y = batch["CLASS"]
+        y = batch["CAT_ID"]
 
         if self.cuda_train_features is not None:
             self.cuda_train_features = None #Free GPU memory
@@ -261,7 +261,7 @@ class SimSiam(pl.LightningModule):
         assert len(batch["OBJ_CROPS"]) == 2
         img_1, img_2 = batch["OBJ_CROPS"]
         uid = batch["UID"]
-        y = batch["CLASS"]
+        y = batch["CAT_ID"]
 
         # Image 1 to image 2 loss
         f1, z1, h1 = self.online_network(img_1)
