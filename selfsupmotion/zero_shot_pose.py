@@ -1117,7 +1117,7 @@ def get_iou_mp(idx:int #, symmetric=False, rescale=False,
     #all_match_idxs = find_match_idx(idx, embeddings, train_embeddings,0)
     match_idx=all_match_idxs[idx]
     if args.random_bbox:
-        match_idx = random.randint(0,len(train_info_df))
+        match_idx = random.randint(0,len(train_info_df)-1)
     if args.random_bbox_same:
         match_idx = random.sample(list(train_info_df.query(f"category=='{category}'").index),1)
         match_idx = match_idx[0]
