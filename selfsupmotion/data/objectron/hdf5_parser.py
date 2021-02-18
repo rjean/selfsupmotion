@@ -38,16 +38,19 @@ class ObjectronHDF5SequenceParser(torch.utils.data.Dataset):
     def __init__(
             self,
             hdf5_path: typing.AnyStr,
-            objects: typing.Optional[typing.Sequence[typing.AnyStr]] = None,  # default => use all
+            seq_subset: typing.Optional[typing.Sequence[typing.AnyStr]] = None,  # default => use all
     ):
         self.hdf5_path = hdf5_path
         assert os.path.exists(self.hdf5_path), f"invalid dataset path: {self.hdf5_path}"
         all_objects = selfsupmotion.data.objectron.sequence_parser.ObjectronSequenceParser.all_objects
-        if not objects:
+        if not seq_subset:
             self.objects = all_objects
         else:
+            # assume we provided subset as a list of '<objname>/<seqid>' or '<objname>' strings
+            objects = sorted([obj for obj in np.unique([s.split("/")[0] for s in seq_subset])])
             assert all([obj in all_objects for obj in objects]), "invalid object name used in filter"
             self.objects = objects
+        self.seq_subset = seq_subset
         self.seq_name_map = {}
         with h5py.File(self.hdf5_path, mode="r") as fd:
             self.target_subsampl_rate = fd.attrs["target_subsampl_rate"]
@@ -59,8 +62,12 @@ class ObjectronHDF5SequenceParser(torch.utils.data.Dataset):
                     print(f"missing '{object}' group in dataset, skipping...")
                     continue
                 for seq_id, seq_data in fd[object].items():
-                    self.seq_name_map[len(self.seq_name_map)] = object + "/" + seq_id
-        assert len(self.seq_name_map) > 0, "invalid subset selected for given archive"
+                    seq_name = object + "/" + seq_id
+                    if not self.seq_subset or seq_name in self.seq_subset:
+                        self.seq_name_map[len(self.seq_name_map)] = seq_name
+        assert len(self.seq_name_map) > 0, "invalid sequence subset specified for given archive"
+        if not self.seq_subset:
+            self.seq_subset = [s for s in self.seq_name_map.values()]
         self.local_fd = None  # will be opened by worker on first getitem call
 
     def __len__(self):
@@ -107,7 +114,7 @@ class ObjectronHDF5FrameTupleParser(ObjectronHDF5SequenceParser):
     def __init__(
             self,
             hdf5_path: typing.AnyStr,
-            objects: typing.Optional[typing.Sequence[typing.AnyStr]] = None,  # default => use all
+            seq_subset: typing.Optional[typing.Sequence[typing.AnyStr]] = None,  # default => use all
             tuple_length: int = 2,  # by default, we will create pairs of frames
             frame_offset: int = 1,  # by default, we will create tuples from consecutive frames
             tuple_offset: int = 2,  # by default, we will skip a frame between tuples
@@ -118,7 +125,7 @@ class ObjectronHDF5FrameTupleParser(ObjectronHDF5SequenceParser):
         hdf5_name = os.path.basename(hdf5_path)  # yes, it's normal that this looks "unused" (it's used)
         cache_hash = selfsupmotion.data.utils.get_params_hash(
             {k: v for k, v in vars().items() if not k.startswith("_") and k != "self"})
-        super().__init__(hdf5_path=hdf5_path, objects=objects)
+        super().__init__(hdf5_path=hdf5_path, seq_subset=seq_subset)
         assert tuple_length >= 1 and frame_offset >= 1 and tuple_offset >= 1, "invalid tuple params"
         self.tuple_length = tuple_length
         self.frame_offset = frame_offset
@@ -136,39 +143,38 @@ class ObjectronHDF5FrameTupleParser(ObjectronHDF5SequenceParser):
 
     def _fetch_tuple_metadata(self):
         tuple_map = {}
+        assert len(self.seq_subset) > 0
         with h5py.File(self.hdf5_path, mode="r") as fd:
-            for object in self.objects:
-                if object not in fd:
+            progress_bar = tqdm.tqdm(
+                self.seq_subset, total=len(self.seq_subset),
+                desc=f"pre-fetching tuple metadata"
+            )
+            for seq_name in progress_bar:
+                seq_data = fd[seq_name]
+                seq_len = len(seq_data["IMAGE"])
+                if seq_len <= self.frame_offset:  # skip, can't create frame tuples
                     continue
-                progress_bar = tqdm.tqdm(
-                    fd[object].items(), total=len(fd[object]),
-                    desc=f"pre-fetching tuple metadata for '{object}'"
-                )
-                for seq_id, seq_data in progress_bar:
-                    seq_len = len(seq_data["IMAGE"])
-                    if seq_len <= self.frame_offset:  # skip, can't create frame tuples
-                        continue
-                    seq_image_size = (seq_data.attrs["IMAGE_WIDTH"], seq_data.attrs["IMAGE_HEIGHT"])
-                    # note: the frame idx here is not the real index if the sequence was subsampled
-                    tuple_start_idx = 0
-                    while tuple_start_idx < seq_len:
-                        candidate_tuple_idxs, candidate_tuple_kpts = [], []
-                        for tuple_idx_offset in range(self.tuple_length):
-                            curr_frame_idx = tuple_start_idx + tuple_idx_offset * self.frame_offset
-                            if curr_frame_idx >= seq_len:
-                                break  # if we're oob for any element in the tuple, break it off
-                            if not self._is_frame_valid(seq_data, curr_frame_idx):
-                                break  # if an element has a bad frame, break it off
-                            candidate_tuple_idxs.append(curr_frame_idx)
-                            # we also get the 2d point projections here
-                            curr_pts = seq_data["POINT_2D"][curr_frame_idx].reshape((-1, 3))[:, :2]
-                            assert len(curr_pts) == 9, "did we not melt the dataset down to 1 instance?"
-                            candidate_tuple_kpts.append(np.multiply(curr_pts, seq_image_size))
-                        if len(candidate_tuple_idxs) == self.tuple_length:  # if it's all good, keep it
-                            # the map will match sample indices to (SEQ_ID, TUPLE_FRAME_IDXS, TUPLE_KPTS_ARRAY)
-                            tuple_map[len(tuple_map)] = \
-                                (object + "/" + seq_id, tuple(candidate_tuple_idxs), np.asarray(candidate_tuple_kpts))
-                        tuple_start_idx += self.tuple_offset
+                seq_image_size = (seq_data.attrs["IMAGE_WIDTH"], seq_data.attrs["IMAGE_HEIGHT"])
+                # note: the frame idx here is not the real index if the sequence was subsampled
+                tuple_start_idx = 0
+                while tuple_start_idx < seq_len:
+                    candidate_tuple_idxs, candidate_tuple_kpts = [], []
+                    for tuple_idx_offset in range(self.tuple_length):
+                        curr_frame_idx = tuple_start_idx + tuple_idx_offset * self.frame_offset
+                        if curr_frame_idx >= seq_len:
+                            break  # if we're oob for any element in the tuple, break it off
+                        if not self._is_frame_valid(seq_data, curr_frame_idx):
+                            break  # if an element has a bad frame, break it off
+                        candidate_tuple_idxs.append(curr_frame_idx)
+                        # we also get the 2d point projections here
+                        curr_pts = seq_data["POINT_2D"][curr_frame_idx].reshape((-1, 3))[:, :2]
+                        assert len(curr_pts) == 9, "did we not melt the dataset down to 1 instance?"
+                        candidate_tuple_kpts.append(np.multiply(curr_pts, seq_image_size))
+                    if len(candidate_tuple_idxs) == self.tuple_length:  # if it's all good, keep it
+                        # the map will match sample indices to (SEQ_ID, TUPLE_FRAME_IDXS, TUPLE_KPTS_ARRAY)
+                        tuple_map[len(tuple_map)] = \
+                            (seq_name, tuple(candidate_tuple_idxs), np.asarray(candidate_tuple_kpts))
+                    tuple_start_idx += self.tuple_offset
         return tuple_map
 
     def __len__(self):
@@ -209,7 +215,6 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
     def __init__(
             self,
             hdf5_path: typing.AnyStr,
-            objects: typing.Optional[typing.Sequence[typing.AnyStr]] = None,  # default => use all
             keypoints_mode: bool = False,
             tuple_length: int = 2,
             frame_offset: int = 1,
@@ -220,8 +225,7 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
             valid_split_ratio: float = 0.1,
             num_workers: int = 8,
             batch_size: int = 256,
-            seed: int = 1337,
-            shuffle: bool = False,
+            split_seed: int = 1337,
             pin_memory: bool = False,
             drop_last: bool = False,
             *args: typing.Any,
@@ -234,28 +238,34 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
         self.jitter_strength = jitter_strength
         self.valid_split_ratio = valid_split_ratio
         self.hdf5_path = hdf5_path
-        self.objects = objects
         self.keypoints_mode = keypoints_mode
         self.tuple_length = tuple_length
         self.frame_offset = frame_offset
         self.tuple_offset = tuple_offset
         self.num_workers = num_workers
         self.batch_size = batch_size
-        self.seed = seed
-        self.shuffle = shuffle
+        self.split_seed = split_seed if split_seed is not None else 1337  # keep this static between runs
         self.pin_memory = pin_memory
         self.drop_last = drop_last
-        # create temp dataset to get sample count
+        # create temp dataset to get total sequence/sample count
         dataset = ObjectronHDF5FrameTupleParser(
             hdf5_path=self.hdf5_path,
-            objects=self.objects,
+            seq_subset=None,  # grab all sequences in first pass, then use em for split
             tuple_length=self.tuple_length,
             frame_offset=self.frame_offset,
             tuple_offset=self.tuple_offset,
         )
-        # note: split below is not ideal for current frame-pair parser, it leaks across sequences
-        self.valid_sample_count = int(len(dataset) * self.valid_split_ratio)
-        self.train_sample_count = len(dataset) - self.valid_sample_count
+        # we do the split in a 2nd pass and re-parse the subsets
+        # ...caching will be 2x longer, but it's the easiest solution, and it costs ~5 minutes once
+        pre_seed_state = np.random.get_state()
+        np.random.seed(self.split_seed)
+        seq_subset_idxs = np.random.permutation(len(dataset.seq_subset))
+        np.random.set_state(pre_seed_state)
+        self.valid_sample_count = int(len(seq_subset_idxs) * self.valid_split_ratio)
+        self.train_sample_count = len(seq_subset_idxs) - self.valid_sample_count
+        self.valid_seq_subset = sorted([dataset.seq_subset[idx] for idx in seq_subset_idxs[:self.valid_sample_count]])
+        self.train_seq_subset = sorted([dataset.seq_subset[idx] for idx in seq_subset_idxs[self.valid_sample_count:]])
+        assert len(np.intersect1d(self.valid_seq_subset, self.train_seq_subset)) == 0
         assert self.train_sample_count > 0 and self.valid_sample_count > 0
 
     def _create_dataloader(
@@ -263,30 +273,22 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
             train: bool = True,
             transforms: typing.Optional[typing.Any] = None,
     ) -> torch.utils.data.DataLoader:
-        # @@@@ TODO: transforms should be passed to the dataset parser
-        dataset = ObjectronHDF5FrameTupleParser(
-            hdf5_path=self.hdf5_path,
-            objects=self.objects,
-            tuple_length=self.tuple_length,
-            frame_offset=self.frame_offset,
-            tuple_offset=self.tuple_offset,
-            _target_fields=["IMAGE", "CENTROID_2D_IM"],
-            _transforms=transforms,
-        )
-        # note: split below is not ideal for current frame-pair parser, it leaks across sequences
-        dataset_train, dataset_valid = torch.utils.data.random_split(
-            dataset, [self.train_sample_count, self.valid_sample_count],
-            generator=torch.Generator().manual_seed(self.seed)
-        )
-        loader = torch.utils.data.DataLoader(
-            dataset_train if train else dataset_valid,
+        return torch.utils.data.DataLoader(
+            dataset=ObjectronHDF5FrameTupleParser(
+                hdf5_path=self.hdf5_path,
+                seq_subset=self.train_seq_subset if train else self.valid_seq_subset,
+                tuple_length=self.tuple_length,
+                frame_offset=self.frame_offset,
+                tuple_offset=self.tuple_offset,
+                _target_fields=["IMAGE", "CENTROID_2D_IM"],
+                _transforms=transforms,
+            ),
             batch_size=self.batch_size,
-            shuffle=self.shuffle,  # @@@@ should we force-shuffle the train set?
+            shuffle=train,
             num_workers=self.num_workers,
             drop_last=self.drop_last,
             pin_memory=self.pin_memory
         )
-        return loader
 
     def train_dataloader(self) -> torch.utils.data.DataLoader:
         return self._create_dataloader(
