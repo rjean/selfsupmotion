@@ -108,6 +108,10 @@ def main():
     if args.tmp_folder is not None:
         rsync_folder(output_dir + os.path.sep, args.output)
 
+def save_list_to_file(filename, string_list):
+    with open(filename,"w") as f:
+        for string in string_list:
+            f.write(f"{string}\n")
 
 def run(args, data_dir, output_dir, hyper_params, mlf_logger):
     """Setup and run the dataloaders, training loops, etc.
@@ -147,6 +151,11 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger):
             jitter_strength=hyper_params.get("jitter_strength", 1.0),
             batch_size=hyper_params["batch_size"],
             num_workers=hyper_params["num_workers"],
+            shared_transform=hyper_params.get("shared_transform", True),
+            crop_scale=(hyper_params.get("crop_scale_min", 0.2),hyper_params.get("crop_scale_max", 1)),
+            crop_ratio=(hyper_params.get("crop_ratio_min", 0.75),hyper_params.get("crop_ratio_max", 1.33)),
+            val_augmentation=hyper_params.get("val_augmentation", True),
+            crop_strategy=hyper_params.get("crop_strategy", "centroid")
         )
         dm.setup()
 
@@ -178,6 +187,9 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger):
 
     if "early_stop_metric" not in hyper_params:
         hyper_params["early_stop_metric"]="val_loss"
+
+    save_list_to_file(f"{output_dir}/train_sequences.txt", dm.train_dataset.seq_subset)
+    save_list_to_file(f"{output_dir}/val_sequences.txt", dm.val_dataset.seq_subset)
 
     if args.embeddings:
         if args.embeddings_ckpt is None:
@@ -226,7 +238,7 @@ def generate_embeddings(args, model, datamodule, train=True, image_size=224):
         for batch in local_progress:
             images1 = batch["OBJ_CROPS"][0]
             meta = batch["UID"]
-            targets = batch["CLASS"]
+            targets = batch["CAT_ID"]
             #images1, _, meta= data
             #images1, _ = images
             images1 = images1.to(args.embeddings_device, non_blocking=True)

@@ -29,8 +29,8 @@ class SimSiamFramePairTrainDataTransform(object):
     (note: the transform list is copied and adapted from the SimCLR transforms)
     """
 
-    @staticmethod
-    def _generate_obj_crops(sample: typing.Dict, crop_height: typing.Union[int, str]):
+    #@staticmethod
+    def _generate_obj_crops(self, sample: typing.Dict, crop_height: typing.Union[int, str]):
         """
         This operation will crop all frames in a sequence based on the object center location
         in the first frame. This will allow the model to perceive some of the camera movement.
@@ -38,20 +38,27 @@ class SimSiamFramePairTrainDataTransform(object):
         assert isinstance(sample, dict) and "IMAGE" in sample and "CENTROID_2D_IM" in sample
         assert len(sample["IMAGE"].shape) == 4 and sample["IMAGE"].shape[1:] == (640, 480, 3)
         assert len(sample["CENTROID_2D_IM"].shape) == 2 and sample["CENTROID_2D_IM"].shape[-1] == 2
+        assert self.crop_strategy in ["centroid","bbox"]
         # get top-left/bottom-right coords for object of interest in first frame (0-th index)
-        if isinstance(crop_height, int):
-            tl = (int(round(sample["CENTROID_2D_IM"][0, 0] - crop_height / 2)),
-                  int(round(sample["CENTROID_2D_IM"][0, 1] - crop_height / 2)))
-            br = (tl[0] + crop_height, tl[1] + crop_height)
+        if self.crop_strategy=="centroid":
+            if isinstance(crop_height, int):
+                tl = (int(round(sample["CENTROID_2D_IM"][0, 0] - crop_height / 2)),
+                      int(round(sample["CENTROID_2D_IM"][0, 1] - crop_height / 2)))
+                br = (tl[0] + crop_height, tl[1] + crop_height)
+            else:
+                assert crop_height == "auto", "unexpected crop height arg"
+                base_pts = np.asarray([pt for pt in sample["POINTS"][0]])
+                real_tl = (base_pts[:, 0].min(), base_pts[:, 1].min())
+                real_br = (base_pts[:, 0].max(), base_pts[:, 1].max())
+                max_size = max(real_br[0] - real_tl[0], real_br[1] - real_tl[1]) * 1.2  # 20% extra
+                tl = (int(round(sample["CENTROID_2D_IM"][0, 0] - max_size / 2)),
+                      int(round(sample["CENTROID_2D_IM"][0, 1] - max_size / 2)))
+                br = (int(round(tl[0] + max_size)), int(round(tl[1] + max_size)))
+        elif self.crop_strategy=="bbox":
+            tl = (int(sample["POINTS"][0,:,0].min()), int(sample["POINTS"][0,:,1].min()))
+            br = (int(sample["POINTS"][0,:,0].max()), int(sample["POINTS"][0,:,1].max()))
         else:
-            assert crop_height == "auto", "unexpected crop height arg"
-            base_pts = np.asarray([pt for pt in sample["POINTS"][0]])
-            real_tl = (base_pts[:, 0].min(), base_pts[:, 1].min())
-            real_br = (base_pts[:, 0].max(), base_pts[:, 1].max())
-            max_size = max(real_br[0] - real_tl[0], real_br[1] - real_tl[1]) * 1.2  # 20% extra
-            tl = (int(round(sample["CENTROID_2D_IM"][0, 0] - max_size / 2)),
-                  int(round(sample["CENTROID_2D_IM"][0, 1] - max_size / 2)))
-            br = (int(round(tl[0] + max_size)), int(round(tl[1] + max_size)))
+            raise ValueError(f"Invalid cropping stragegy: {self.crop_strategy}")
         # get crops one at a time for all frames in the seq, for all seqs in the minibatch
         if tl==br: #should not happen!
             print(f"Annotation error on {sample['UID']}, moving on!")
@@ -85,8 +92,11 @@ class SimSiamFramePairTrainDataTransform(object):
             seed_wrap_augments: bool = False,
             use_hflip_augment: bool = False,
             drop_orig_image: bool = True,
-            crop_scale: typing.Tuple[float, float] = (0.4, 1.0),
+            crop_scale: typing.Tuple[float, float] = (0.2, 1.0),
             crop_ratio: typing.Tuple[float, float] = (1.0, 1.0),
+            shared_transform = True,
+            augmentation = True, #Will be used to disable augmentation on inference / validation.
+            crop_strategy = "centroid"
     ) -> None:
         self.crop_height = crop_height
         self.input_height = input_height
@@ -95,39 +105,55 @@ class SimSiamFramePairTrainDataTransform(object):
         self.seed_wrap_augments = seed_wrap_augments
         self.use_hflip_augment = use_hflip_augment
         self.drop_orig_image = drop_orig_image
+        self.shared_transform = shared_transform
+        self.enable_augmentation= augmentation
+        self.crop_strategy = crop_strategy
 
-        augment_transforms = [
-            albumentations.RandomResizedCrop(
-                height=self.input_height,
-                width=self.input_height,
-                scale=crop_scale,
-                ratio=crop_ratio,
-            ),
-        ]
-        if use_hflip_augment:
-            augment_transforms.append(albumentations.HorizontalFlip(p=0.5))
-        augment_transforms.extend([
-            albumentations.ColorJitter(
-                brightness=0.6 * self.jitter_strength,
-                contrast=0.6 * self.jitter_strength,
-                saturation=0.6 * self.jitter_strength,
-                hue=0.2 * self.jitter_strength,
-                p=0.8,
-            ),
-            albumentations.ToGray(p=0.2),
-        ])
-        if self.gaussian_blur:
-            # @@@@@ TODO: check what kernel size is best? is auto good enough?
-            #kernel_size = int(0.1 * self.input_height)
-            #if kernel_size % 2 == 0:
-            #    kernel_size += 1
-            augment_transforms.append(albumentations.GaussianBlur(
-                blur_limit=(3, 5),
-                #blur_limit=kernel_size,
-                #sigma_limit=???
-                p=0.5,
-            ))
+        assert self.crop_strategy in ["centroid","bbox"]
 
+        if self.enable_augmentation:
+            augment_transforms = [
+                albumentations.RandomResizedCrop(
+                    height=self.input_height,
+                    width=self.input_height,
+                    scale=crop_scale,
+                    ratio=crop_ratio,
+                ),
+            ]
+            if use_hflip_augment:
+                augment_transforms.append(albumentations.HorizontalFlip(p=0.5))
+            augment_transforms.extend([
+                albumentations.ColorJitter(
+                    brightness=0.6 * self.jitter_strength,
+                    contrast=0.6 * self.jitter_strength,
+                    saturation=0.6 * self.jitter_strength,
+                    hue=0.2 * self.jitter_strength,
+                    p=0.8,
+                ),
+                albumentations.ToGray(p=0.2),
+            ])
+            if self.gaussian_blur:
+                # @@@@@ TODO: check what kernel size is best? is auto good enough?
+                #kernel_size = int(0.1 * self.input_height)
+                #if kernel_size % 2 == 0:
+                #    kernel_size += 1
+                augment_transforms.append(albumentations.GaussianBlur(
+                    blur_limit=(3, 5),
+                    #blur_limit=kernel_size,
+                    #sigma_limit=???
+                    p=0.5,
+                ))
+        else:
+            augment_transforms = [
+                albumentations.LongestMaxSize(
+                    max_size=224
+                ),
+                albumentations.PadIfNeeded(
+                    min_height=224,
+                    min_width=224,
+                    border_mode=0,
+                )
+            ]
         if self.seed_wrap_augments:
             assert thelper_available
             self.augment_transform = thelper.transforms.wrappers.SeededOpWrapper(
@@ -159,8 +185,11 @@ class SimSiamFramePairTrainDataTransform(object):
         # now, for each crop, apply the seeded transform list
         output_crops, output_keypoints = [], []
         shared_seed = np.random.randint(np.iinfo(np.int32).max)
+        
+        #if self.enable_augmentation: #Might be disabled for evalution or validation.
         for crop_idx in range(len(sample["OBJ_CROPS"])):
-            np.random.seed(shared_seed)  # the wrappers will use numpy to re-seed themselves internally
+            if self.shared_transform:
+                np.random.seed(shared_seed)  # the wrappers will use numpy to re-seed themselves internally
             if self.seed_wrap_augments:
                 assert "POINTS" not in sample, "missing impl"
                 aug_crop = self.augment_transform(sample["OBJ_CROPS"][crop_idx])

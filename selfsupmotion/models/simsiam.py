@@ -137,6 +137,20 @@ class SiameseArm(nn.Module):
         h = self.predictor(z)
         return y, z, h
 
+import torchvision
+import cv2
+
+def save_mosaic(filename, tensor):
+    inv_normalize = torchvision.transforms.Normalize(
+    mean=[-0.485/0.229, -0.456/0.224, -0.406/0.225],
+    std=[1/0.229, 1/0.224, 1/0.255])
+    #grid = torchvision.utils.make_grid(tensor)
+    tensor = inv_normalize(tensor)
+    torchvision.utils.save_image(tensor, filename)
+    #img = img.detach().cpu().numpy().astype(np.uint8)
+    #img = np.swapaxes(img,2,0)
+    #img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+    #return cv2.imwrite(filename, img)
 
 class SimSiam(pl.LightningModule):
 
@@ -239,6 +253,10 @@ class SimSiam(pl.LightningModule):
         assert len(batch["OBJ_CROPS"]) == 2
         img_1, img_2 = batch["OBJ_CROPS"]
 
+        if batch_idx==0:
+            save_mosaic("img_1_train.jpg", img_1)
+            save_mosaic("img_2_train.jpg", img_2)
+            
         #assert img_1.shape==torch.Size([32, 3, 224, 224])
         uid = batch["UID"]
         y = batch["CAT_ID"]
@@ -263,6 +281,10 @@ class SimSiam(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         assert len(batch["OBJ_CROPS"]) == 2
         img_1, img_2 = batch["OBJ_CROPS"]
+
+        if batch_idx==0:
+            save_mosaic("img_1_val.jpg", img_1)
+            save_mosaic("img_2_val.jpg", img_2)
         uid = batch["UID"]
         y = batch["CAT_ID"]
 

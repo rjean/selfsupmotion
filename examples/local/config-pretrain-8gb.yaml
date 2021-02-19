@@ -21,5 +21,10 @@ num_workers: 16
 seed: None
 precision: 16
 early_stop_metric: val_accuracy
-
-
+shared_transform: False
+crop_scale_min: 0.2
+crop_scale_max: 1.0
+crop_ratio_min: 0.75
+crop_ratio_max: 1.33
+val_augmentation: False
+crop_strategy: bbox
