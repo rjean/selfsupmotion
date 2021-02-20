@@ -350,6 +350,10 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
                 input_height=self.image_size,
                 gaussian_blur=self.gaussian_blur,
                 jitter_strength=self.jitter_strength,
+                crop_scale=self.crop_scale,
+                crop_ratio=self.crop_ratio,
+                shared_transform=self.shared_transform,
+                crop_strategy=self.crop_strategy
             )
 
     def val_transform(self):
