@@ -112,6 +112,16 @@ class SimSiamFramePairTrainDataTransform(object):
         self.enable_augmentation= augmentation
         self.crop_strategy = crop_strategy
 
+        bbox_transforms = [
+                albumentations.LongestMaxSize(
+                    max_size=224
+                ),
+                albumentations.PadIfNeeded(
+                    min_height=224,
+                    min_width=224,
+                    border_mode=0,
+                )
+            ]
         assert self.crop_strategy in ["centroid","bbox"]
 
         if self.enable_augmentation:
@@ -123,14 +133,16 @@ class SimSiamFramePairTrainDataTransform(object):
                     ratio=crop_ratio,
                 ),
             ]
+            if self.crop_strategy=="bbox":
+                augment_transforms = bbox_transforms + augment_transforms
             if use_hflip_augment:
                 augment_transforms.append(albumentations.HorizontalFlip(p=0.5))
             augment_transforms.extend([
                 albumentations.ColorJitter(
-                    brightness=0.6 * self.jitter_strength,
-                    contrast=0.6 * self.jitter_strength,
-                    saturation=0.6 * self.jitter_strength,
-                    hue=0.2 * self.jitter_strength,
+                    brightness=0.4 * self.jitter_strength,
+                    contrast=0.4 * self.jitter_strength,
+                    saturation=0.4 * self.jitter_strength,
+                    hue=0.1 * self.jitter_strength,
                     p=0.8,
                 ),
                 albumentations.ToGray(p=0.2),
@@ -147,16 +159,7 @@ class SimSiamFramePairTrainDataTransform(object):
                     p=0.5,
                 ))
         else:
-            augment_transforms = [
-                albumentations.LongestMaxSize(
-                    max_size=224
-                ),
-                albumentations.PadIfNeeded(
-                    min_height=224,
-                    min_width=224,
-                    border_mode=0,
-                )
-            ]
+            augment_transforms = bbox_transforms
         if self.seed_wrap_augments:
             assert thelper_available
             self.augment_transform = thelper.transforms.wrappers.SeededOpWrapper(
