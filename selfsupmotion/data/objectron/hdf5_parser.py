@@ -273,15 +273,16 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
         np.random.seed(self.split_seed)
         seq_subset_idxs = np.random.permutation(len(dataset.seq_subset))
         np.random.set_state(pre_seed_state)
-        self.valid_sample_count = int(len(seq_subset_idxs) * self.valid_split_ratio)
-        self.train_sample_count = len(seq_subset_idxs) - self.valid_sample_count
-        self.valid_seq_subset = sorted([dataset.seq_subset[idx] for idx in seq_subset_idxs[:self.valid_sample_count]])
-        self.train_seq_subset = sorted([dataset.seq_subset[idx] for idx in seq_subset_idxs[self.valid_sample_count:]])
-        self.train_dataset = None
-        self.valid_dataset = None
-        self.train_transforms = None
-        self.val_transforms = None
+        self.valid_seq_count = int(len(seq_subset_idxs) * self.valid_split_ratio)
+        self.train_seq_count = len(seq_subset_idxs) - self.valid_seq_count
+        self.valid_seq_subset = sorted([dataset.seq_subset[idx] for idx in seq_subset_idxs[:self.valid_seq_count]])
+        self.train_seq_subset = sorted([dataset.seq_subset[idx] for idx in seq_subset_idxs[self.valid_seq_count:]])
+        self.valid_sample_subset = [idx for idx, tup in dataset.frame_pair_map.items() if tup[0] in self.valid_seq_subset]
+        self.train_sample_subset = [idx for idx, tup in dataset.frame_pair_map.items() if tup[0] in self.train_seq_subset]
+        self.valid_sample_count = len(self.valid_sample_subset)
+        self.train_sample_count = len(self.train_sample_subset)
         assert len(np.intersect1d(self.valid_seq_subset, self.train_seq_subset)) == 0
+        assert len(np.intersect1d(self.valid_sample_count, self.train_sample_count)) == 0
         assert self.train_sample_count > 0 and self.valid_sample_count > 0
 
     def setup(self, stage= None):
