@@ -4,13 +4,32 @@ from selfsupmotion.data.objectron.dataset.box import EDGES, FACES
 import PIL
 from PIL import ImageDraw
 
-def get_dist_from_plane(plane_normal, plane_center, point):
+def get_dist_from_plane(plane_normal : np.ndarray, plane_center: np.ndarray, point: np.ndarray) -> float:
+    """Get the smallest distance between a point and a plane.
+
+    Args:
+        plane_normal (np.ndarray): Normal vector of the plane. (Perpendicular to the plane.)
+        plane_center (np.ndarray): A point lying on the plane. 
+        point (np.ndarray): The point on which we want to evaluate the distance.
+
+    Returns:
+        float: Smallest distance between the plane and the point.
+    """
     plane = get_plane_equation_center_normal(plane_center, plane_normal)
     a, b, c, d = plane
     X,Y,Z = point
     return abs(a*X + b*Y + c*Z + d)/np.sqrt(a**2+b**2+c**2)
 
-def get_plane_equation_center_normal(plane_center, plane_normal):
+def get_plane_equation_center_normal(plane_center : np.ndarray, plane_normal: np.ndarray) -> np.ndarray:
+    """Get a plane equation from it's normal vector and a point on the plane.
+
+    Args:
+        plane_center (np.ndarray): Normal vector of the plane. (Perpendicular to the plane.)
+        plane_normal (np.ndarray): A point lying on the plane. 
+
+    Returns:
+        np.ndarray: The plane equation is [ax + by +cz -d]=0
+    """
     #ax +by + cz = d 
     #where d= ax0 + by0 +czo
     #https://tutorial.math.lamar.edu/classes/calciii/eqnsofplanes.aspx
@@ -18,7 +37,17 @@ def get_plane_equation_center_normal(plane_center, plane_normal):
     #The plane equation is [ax + by +cz -d]=0
     return np.hstack((plane_normal, -np.dot(plane_center,plane_normal)))
 
-def get_planes_intersections(plane1, plane2, plane3):
+def get_planes_intersections(plane1 : np.ndarray, plane2: np.ndarray, plane3: np.ndarray) -> np.ndarray:
+    """Get the intersection point between 3 planes.
+
+    Args:
+        plane1 (np.ndarray): Equation of the first plane. [ax + by +cz -d]=0
+        plane2 (np.ndarray): Equation of the second plane. [ax + by +cz -d]=0
+        plane3 (np.ndarray): Equation of the third plane. [ax + by +cz -d]=0
+    
+    Returns:
+        np.ndarray: Intersection point.
+    """
     #See Hartley, p.589
     #The plane equation is [ax + by +cz -d]=0
     A = np.vstack((plane1, plane2, plane3))
@@ -30,7 +59,17 @@ def get_planes_intersections(plane1, plane2, plane3):
     return point[0:3]
 
 #https://en.wikipedia.org/wiki/Line%E2%80%93plane_intersection
-def get_intersect_relative_to_camera(plane_normal, plane_center, point):
+def get_intersect_relative_to_camera(plane_normal: np.ndarray, plane_center: np.ndarray, point: np.ndarray) -> np.ndarray:
+    """Gets the intersection between a line going for (0,0,0) to point and the plane.
+
+    Args:
+        plane_center (np.ndarray): Normal vector of the plane. (Perpendicular to the plane.)
+        plane_normal (np.ndarray): A point lying on the plane. 
+        point (np.ndarray): Point defining the line to the origin (0,0,0)
+
+    Returns:
+        np.ndarray: Intersection point.
+    """
     p0 = plane_center
     n = plane_normal
     l0 = np.array([0,0,0]) #camera center
@@ -41,7 +80,15 @@ def get_intersect_relative_to_camera(plane_normal, plane_center, point):
 
 
 
-def get_3d_bbox_center(points3d):
+def get_3d_bbox_center(points3d: np.ndarray) -> np.ndarray:
+    """Gets the center of a 3d bounding box.
+
+    Args:
+        points3d (np.ndarray): 3D Bounding box (8x3)
+
+    Returns:
+        np.ndarray: Center of the bounding box.
+    """
     return 0.5 * (points3d[1:].min(axis=0) + points3d[1:].max(axis=0))
 
 

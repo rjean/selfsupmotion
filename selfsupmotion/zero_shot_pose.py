@@ -95,16 +95,16 @@ def get_smooth_scale_factor(points_3d_query, points3d_scaled, intrinsics, alpha)
     factor = get_scale_factor(points_3d_query, points3d_scaled, intrinsics)    
     return (alpha+factor-1)/alpha
 
-def get_bounding_box(idx, match_idx, info_df, train_info_df, adjust_scale=False):
-    points_2d_result, points_3d_result = get_points(train_info_df, match_idx)
+def get_bounding_box(idx, match_idx, experiment, adjust_scale=False):
+    points_2d_result, points_3d_result = experiment.get_points(match_idx, train=True)
     points_2d_px_result = geo.points_2d_to_points2d_px(points_2d_result, 360, 480)
-    points_2d_query, points_3d_query = get_points(info_df, idx)
+    points_2d_query, points_3d_query = experiment.get_points(idx, train=False)
     points_2d_px_query = geo.points_2d_to_points2d_px(points_2d_query, 360, 480)
-    plane_center_query, plane_normal_query= get_plane(info_df, idx)
-    plane_center_result, plane_normal_result = get_plane(train_info_df, match_idx)
+    plane_center_query, plane_normal_query= experiment.get_plane(idx, train=False)
+    plane_center_result, plane_normal_result = experiment.get_plane(match_idx, train=True)
     result_bbox = geo.get_bbox(points_2d_px_result, 360, 480) 
-    query_camera = get_camera(info_df, idx)
-    query_intrinsics = get_intrinsics(query_camera)
+    #query_camera = experiment.get_camera(idx, train=False)
+    query_intrinsics = experiment.get_intrinsics(idx, train=False)
     query_intrinsics = geo.scale_intrinsics(query_intrinsics, 0.25,0.25)
     result_bbox = geo.get_bbox(points_2d_px_result, 360, 480)
     query_bbox = geo.get_bbox(points_2d_px_query, 360, 480)
@@ -185,24 +185,7 @@ def get_objectron_bbox_colors():
     return o3d.utility.Vector3dVector(bbox_point_colors)  
 
 
-def get_plane(df : pd.DataFrame, idx: int):
-    """Get object plane for a specific camera frame.
 
-    Args:
-        df (pd.DataFrame): Embeddings meta data frame.
-        idx (int): Index of the frame in the dataframe.
-
-    Returns:
-        tuple: 2d points, 3d points relative to camera.
-    """
-    idx = int(idx)
-    sequence_annotations = get_sequence_annotations(df.iloc[idx]["category"], df.iloc[idx]["batch_number"], df.iloc[idx]["sequence_number"])
-    frame = int(df.iloc[idx]["frame"])
-
-    plane_center = sequence_annotations.frame_annotations[frame].plane_center
-    plane_normal = sequence_annotations.frame_annotations[frame].plane_normal
-    
-    return np.array(plane_center), np.array(plane_normal)
 
 def parse_info_df(info_df, subset="valid"):
     """Parses an embedding meta-data dataframe. (The output of SimSiam)
@@ -221,89 +204,9 @@ def parse_info_df(info_df, subset="valid"):
     info_df["filepath"]=f"/home/raphael/datasets/objectron/96x96/{subset}/" + info_df["category"] +"/" + info_df["sequence_uid"] +"." + info_df["frame"] + ".jpg"
     info_df["filepath_full"]="/home/raphael/datasets/objectron/640x480_full/" + info_df["category"] +"/" + info_df["sequence_uid"] +"." + info_df["frame"] + ".jpg"
 
-def read_experiment(experiment: str):
-    """Read the output of a SimSiam experiment folder. (Embeddings and metadata)
-
-    Args:
-        experiment (str): Output folder location 
-
-    Returns:
-        tuple: validation embeddings, validation meta data, train embeddings, train meta data
-    """
-    global use_cupy
-    load_fn = cp.load
-    if not use_cupy:
-        load_fn = np.load
-    
-    embeddings = load_fn(f"{experiment}/embeddings.npy")
-    if embeddings.shape [1]>embeddings.shape [0]:
-        embeddings=embeddings.T
-    info = numpy.load(f"{experiment}/info.npy")
-    assert info.shape[0]==2
-    train_new_filename = f"{experiment}/train_embeddings.npy"
-    train_old_filename = f"{experiment}/training_embeddings.npy"
-    if os.path.exists(train_new_filename):
-        train_embeddings = load_fn(train_new_filename)
-    else:
-        train_embeddings = load_fn(train_old_filename)
-    train_info = numpy.load(f"{experiment}/train_info.npy")
-    assert train_info.shape[0]==2
-    info_df = pd.DataFrame(info.T)
-    train_info_df = pd.DataFrame(train_info.T)
-    info_df_columns = {0:"category_id",1:"uid"}
-    train_info_df = train_info_df.rename(columns=info_df_columns)
-    info_df = info_df.rename(columns=info_df_columns)
-    parse_info_df(info_df)
-    parse_info_df(train_info_df, subset="train")
-    assert train_embeddings.shape[0] == embeddings.shape[1]
-    return embeddings, info_df, train_embeddings, train_info_df
 
 
-def get_sequence_annotations(category: str, batch_number: str, sequence_number: str, annotations_path="/home/raphael/datasets/objectron/annotations"):
-    """Get annotation data for a video sequence.
 
-    Args:
-        category (str): Category in the objectron dataset.
-        batch_number (str): Batch number. 
-        sequence_number (str): Sequence number. 
-        annotations_path (str, optional): Location of the Objectron annotation files. Defaults to "/home/raphael/datasets/objectron/annotations".
-
-    Returns:
-        annotations: Google's annotations in their format.
-    """
-    sequence = annotation_protocol.Sequence()
-    #category, batch_number, sequence_number = get_batch_sequence_from_video_file(video_file)
-    annotation_file=f"{annotations_path}/{category}/{batch_number}/{sequence_number}.pbdata"
-    with open(annotation_file, 'rb') as pb:
-        sequence.ParseFromString(pb.read())
-    return sequence
-
-
-def get_points(df : pd.DataFrame, idx: int):
-    """Get 2d and 3d points for a specific frame.
-
-    Args:
-        df (pd.DataFrame): Embeddings meta data frame.
-        idx (int): Index of the frame in the dataframe.
-
-    Returns:
-        tuple: 2d points, 3d points relative to camera.
-    """
-    idx = fix_idx(idx)
-    sequence_annotations = get_sequence_annotations(df.iloc[idx]["category"], df.iloc[idx]["batch_number"], df.iloc[idx]["sequence_number"])
-    frame = int(df.iloc[idx]["frame"])
-    object_id = int(df.iloc[idx]["object_id"])
-    #print(frame)
-    #sequence_annotations.frame_annotations[0].annotations[0]
-    keypoints = sequence_annotations.frame_annotations[frame].annotations[object_id].keypoints
-    points_2d = []
-    points_3d = []
-    for keypoint in keypoints:
-        point_2d = (keypoint.point_2d.x, keypoint.point_2d.y, keypoint.point_2d.depth)
-        point_3d = (keypoint.point_3d.x, keypoint.point_3d.y, keypoint.point_3d.z)
-        points_2d.append(point_2d)
-        points_3d.append(point_3d)
-    return np.array(points_2d), np.array(points_3d)
 
 
 def fix_idx(idx):
@@ -311,21 +214,6 @@ def fix_idx(idx):
         idx = int(idx) #Just make sure this is the right 
     return idx
 
-def get_camera(df: pd.DataFrame, idx:int):
-    """Get camera information for a specific trame. 
-
-    Args:
-        df (pd.DataFrame): Embeddings meta data frame.
-        idx (int): Index of the frame in the dataframe.
-
-    Returns:
-        object: Google's camera information for the frame.
-    """
-    idx = fix_idx(idx)
-    sequence_annotations = get_sequence_annotations(df.iloc[idx]["category"], df.iloc[idx]["batch_number"], df.iloc[idx]["sequence_number"])
-    frame = int(df.iloc[idx]["frame"])
-    frame_annotation = sequence_annotations.frame_annotations[frame]
-    return frame_annotation.camera
 
 
 
@@ -575,8 +463,7 @@ def find_all_match_idx(query_embeddings: np.ndarray, train_embeddings:np.ndarray
 
 
 
-def get_intrinsics(camera):
-    return np.array(camera.intrinsics).reshape(3,3)
+
 
 def describe_intrinsics(intrinsics: np.array):
     """Describe the intrinsics matrix in their common names.
@@ -590,10 +477,11 @@ def describe_intrinsics(intrinsics: np.array):
     center_y = intrinsics[1,2]
     return float(alpha_x), float(alpha_y), float(center_x), float(center_y)  
 
-embeddings = None
-info_df = None
-train_embeddings = None
-train_info_df = None
+#embeddings = None
+#info_df = None
+#train_embeddings = None
+#train_info_df = None
+experiment = None
 #ground_plane = True
 #symmetric = False
 #rescale = False
@@ -602,22 +490,6 @@ all_match_idxs = None
 import argparse
 import time
 
-def get_subset(info_df, embeddings, ratio):
-    if ratio==1:
-        return info_df, embeddings
-    info_df["video_uid"]=info_df["category"]+"_"+info_df["video_id"]
-    video_uids = list(info_df["video_uid"].unique())
-    len(video_uids)
-    #ratio = 0.1
-    videos_uids_subset = random.sample(video_uids, int(len(video_uids)*ratio))
-    print(f"Using a subset of {len(videos_uids_subset)} out of {len(video_uids)} total sequences for evaluation.")
-
-    info_df_subset =info_df[info_df["video_uid"].isin(videos_uids_subset)]
-    #info_df_subset
-    embeddings_subset=embeddings[:,list(info_df_subset.index)]
-    #embeddings_subset.shape
-    info_df_subset = info_df_subset.reset_index()
-    return info_df_subset, embeddings_subset
 
 def get_iou_mp(idx:int #, symmetric=False, rescale=False,
             #k=0, show=False, compute_aligned=False, ground_plane=True,
@@ -637,25 +509,25 @@ def get_iou_mp(idx:int #, symmetric=False, rescale=False,
         [type]: [description]
     """
     
-    global args, info_df, embeddings, train_info_df, train_embeddings, all_match_idxs
-    category = info_df.iloc[idx]["category"]
+    global args, experiment, all_match_idxs
+    category = experiment.info_df.iloc[idx]["category"]
 
     #all_match_idxs = find_match_idx(idx, embeddings, train_embeddings,0)
     match_idx=all_match_idxs[idx]
     if args.random_bbox:
-        match_idx = random.randint(0,len(train_info_df)-1)
+        match_idx = random.randint(0,len(experiment.train_info_df)-1)
     if args.random_bbox_same:
-        match_idx = random.sample(list(train_info_df.query(f"category=='{category}'").index),1)
+        match_idx = random.sample(list(experiment.train_info_df.query(f"category=='{category}'").index),1)
         match_idx = match_idx[0]
 
-    if args.legacy:
-        if args.ground_plane:
-            points3d_processed, points3d_valid = get_match_snapped_points(idx, match_idx, info_df, train_info_df, ground_truth=True, rescale=args.rescale, align_axis=not args.no_align_axis)
-        else:
-            points3d_processed, points3d_valid = get_match_aligned_points(idx, match_idx, info_df, train_info_df, ground_truth=True)
-    else:
-        _, points3d_valid = get_points(info_df, idx)
-        points3d_processed = get_bounding_box(idx, match_idx, info_df, train_info_df, adjust_scale=True)
+    #if args.legacy:
+    #    if args.ground_plane:
+    #        points3d_processed, points3d_valid = get_match_snapped_points(idx, match_idx, experiment.info_df, train_info_df, ground_truth=True, rescale=args.rescale, align_axis=not args.no_align_axis)
+    #    else:
+    #        points3d_processed, points3d_valid = get_match_aligned_points(idx, match_idx, experiment.info_df, train_info_df, ground_truth=True)
+    #else:
+    _, points3d_valid = experiment.get_points(idx, train=False)
+    points3d_processed = get_bounding_box(idx, match_idx, experiment, adjust_scale=True)
     #if show:
     #    visualize(points3d_valid, points3d_train_rotated, points3d_train_aligned)
     iou_value = get_iou_between_bbox(points3d_valid, points3d_processed)
@@ -665,9 +537,178 @@ def get_iou_mp(idx:int #, symmetric=False, rescale=False,
             best_iou = get_iou_rotated(points3d_processed, points3d_valid, best_iou)
         #_get_iou.wait()
     return best_iou , idx, match_idx
-#@synchronized
+
+class ExperimentHandlerFile():
+    def read_experiment(self, experiment: str):
+        """Read the output of a SimSiam experiment folder. (Embeddings and metadata)
+
+        Args:
+            experiment (str): Output folder location 
+
+        Returns:
+            tuple: validation embeddings, validation meta data, train embeddings, train meta data
+        """
+        global use_cupy
+        load_fn = cp.load
+        if not use_cupy:
+            load_fn = np.load
+        
+
+
+        embeddings = load_fn(f"{experiment}/embeddings.npy")
+        if embeddings.shape [1]>embeddings.shape [0]:
+            embeddings=embeddings.T
+        info = numpy.load(f"{experiment}/info.npy")
+        assert info.shape[0]==2
+        train_new_filename = f"{experiment}/train_embeddings.npy"
+        train_old_filename = f"{experiment}/training_embeddings.npy"
+        if os.path.exists(train_new_filename):
+            train_embeddings = load_fn(train_new_filename)
+        else:
+            train_embeddings = load_fn(train_old_filename)
+        train_info = numpy.load(f"{experiment}/train_info.npy")
+        assert train_info.shape[0]==2
+        info_df = pd.DataFrame(info.T)
+        train_info_df = pd.DataFrame(train_info.T)
+        info_df_columns = {0:"category_id",1:"uid"}
+        train_info_df = train_info_df.rename(columns=info_df_columns)
+        info_df = info_df.rename(columns=info_df_columns)
+        parse_info_df(info_df)
+        parse_info_df(train_info_df, subset="train")
+        assert train_embeddings.shape[0] == embeddings.shape[1]
+        self.embeddings = embeddings
+        self.train_embeddings = train_embeddings
+        self.info_df = info_df
+        self.train_info_df = train_info_df
+
+    def __init__(self, experiment):
+        self.info_df = None
+        self.train_info_df = None
+        self.read_experiment(experiment)
+
+    def get_points(self, idx: int, train=False):
+        """Get 2d and 3d points for a specific frame.
+
+        Args:
+            df (pd.DataFrame): Embeddings meta data frame.
+            idx (int): Index of the frame in the dataframe.
+
+        Returns:
+            tuple: 2d points, 3d points relative to camera.
+        """
+        if train:
+            df = self.train_info_df
+        else:
+            df = self.info_df
+
+        idx = fix_idx(idx)
+        sequence_annotations = self.get_sequence_annotations(df.iloc[idx]["category"], df.iloc[idx]["batch_number"], df.iloc[idx]["sequence_number"])
+        frame = int(df.iloc[idx]["frame"])
+        object_id = int(df.iloc[idx]["object_id"])
+        keypoints = sequence_annotations.frame_annotations[frame].annotations[object_id].keypoints
+        points_2d = []
+        points_3d = []
+        for keypoint in keypoints:
+            point_2d = (keypoint.point_2d.x, keypoint.point_2d.y, keypoint.point_2d.depth)
+            point_3d = (keypoint.point_3d.x, keypoint.point_3d.y, keypoint.point_3d.z)
+            points_2d.append(point_2d)
+            points_3d.append(point_3d)
+        return np.array(points_2d), np.array(points_3d)
+
+    def get_sequence_annotations(self, category: str, batch_number: str, sequence_number: str, annotations_path="/home/raphael/datasets/objectron/annotations"):
+        """Get annotation data for a video sequence.
+
+        Args:
+            category (str): Category in the objectron dataset.
+            batch_number (str): Batch number. 
+            sequence_number (str): Sequence number. 
+            annotations_path (str, optional): Location of the Objectron annotation files. Defaults to "/home/raphael/datasets/objectron/annotations".
+
+        Returns:
+            annotations: Google's annotations in their format.
+        """
+        sequence = annotation_protocol.Sequence()
+        annotation_file=f"{annotations_path}/{category}/{batch_number}/{sequence_number}.pbdata"
+        with open(annotation_file, 'rb') as pb:
+            sequence.ParseFromString(pb.read())
+        return sequence
+
+    def get_plane(self, idx: int, train=False):
+        """Get object plane for a specific camera frame.
+
+        Args:
+            df (pd.DataFrame): Embeddings meta data frame.
+            idx (int): Index of the frame in the dataframe.
+
+        Returns:
+            tuple: 2d points, 3d points relative to camera.
+        """
+        if train:
+            df = self.train_info_df
+        else:
+            df = self.info_df
+        idx = int(idx)
+        sequence_annotations = self.get_sequence_annotations(df.iloc[idx]["category"], df.iloc[idx]["batch_number"], df.iloc[idx]["sequence_number"])
+        frame = int(df.iloc[idx]["frame"])
+
+        plane_center = sequence_annotations.frame_annotations[frame].plane_center
+        plane_normal = sequence_annotations.frame_annotations[frame].plane_normal
+
+        return np.array(plane_center), np.array(plane_normal)
+
+    
+    def _get_camera(self, idx:int, train=False):
+        """Get camera information for a specific trame. 
+
+        Args:
+            df (pd.DataFrame): Embeddings meta data frame.
+            idx (int): Index of the frame in the dataframe.
+
+        Returns:
+            object: Google's camera information for the frame.
+        """
+        if train:
+            df = self.train_info_df
+        else:
+            df = self.info_df
+        idx = fix_idx(idx)
+        sequence_annotations = self.get_sequence_annotations(df.iloc[idx]["category"], df.iloc[idx]["batch_number"], df.iloc[idx]["sequence_number"])
+        frame = int(df.iloc[idx]["frame"])
+        frame_annotation = sequence_annotations.frame_annotations[frame]
+        return frame_annotation.camera
+
+    def get_intrinsics(self, idx, train=False):
+        camera = self._get_camera(idx, train)
+        return np.array(camera.intrinsics).reshape(3,3)
+
+    @staticmethod
+    def _get_subset(info_df, embeddings, ratio):
+        if ratio==1:
+            return info_df, embeddings
+        info_df["video_uid"]=info_df["category"]+"_"+info_df["video_id"]
+        video_uids = list(info_df["video_uid"].unique())
+        videos_uids_subset = random.sample(video_uids, int(len(video_uids)*ratio))
+        print(f"Using a subset of {len(videos_uids_subset)} out of {len(video_uids)} total sequences for evaluation.")
+    
+        info_df_subset =info_df[info_df["video_uid"].isin(videos_uids_subset)]
+        embeddings_subset=embeddings[:,list(info_df_subset.index)]
+        info_df_subset = info_df_subset.reset_index()
+        return info_df_subset, embeddings_subset
+
+    def set_trainsubset(self, ratio):
+        train_info_df, train_embeddings = self._get_subset(self.train_info_df, self.train_embeddings, ratio)
+        self.train_info_df = train_info_df
+        self.train_embeddings = train_embeddings
+
+    def get_category(self, idx, train=False):
+        if train:
+            df = self.train_info_df
+        else:
+            df = self.info_df
+        return df.iloc[idx]["category"]
+
 def main():
-    global args, info_df, embeddings, train_info_df, train_embeddings, ground_plane, symmetric, rescale, all_match_idxs, use_cupy
+    global args, experiment, ground_plane, symmetric, rescale, all_match_idxs, use_cupy
     """Command line tool for evaluating zero shot pose estimation
     on objectron."""
     parser = argparse.ArgumentParser(description='Command line tool for evaluating zero shot pose estimation on objectron.')
@@ -687,19 +728,24 @@ def main():
     args = parser.parse_args()
     symmetric = args.symmetric
     rescale = args.rescale
+    
+    
+    
     if args.cpu:
         use_cupy=False
-    embeddings, info_df, train_embeddings, train_info_df = read_experiment(args.experiment)
-    all_match_idxs = find_all_match_idx(embeddings, train_embeddings, 0)
+    #embeddings, info_df, train_embeddings, train_info_df = read_experiment(args.experiment)
+    experiment = ExperimentHandlerFile(args.experiment)
+
+    all_match_idxs = find_all_match_idx(experiment.embeddings, experiment.train_embeddings, 0)
     get_iou_mp(1)
-    if args.subset_size < len(info_df):
-        subset = random.sample(range(0,len(info_df)),args.subset_size)
+    if args.subset_size < len(experiment.info_df):
+        subset = random.sample(range(0,len(experiment.info_df)),args.subset_size)
     else:
-        print(f"Evaluating on all samples size subset size ({args.subset_size}) is larger that test set size ({len(info_df)}).")
-        subset = list(range(0,len(info_df)))
+        print(f"Evaluating on all samples size subset size ({args.subset_size}) is larger that test set size ({len(experiment.info_df)}).")
+        subset = list(range(0,len(experiment.info_df)))
         random.shuffle(subset)
     if args.trainset_ratio > 0 and args.trainset_ratio <= 1:
-        train_info_df, train_embeddings = get_subset(train_info_df, train_embeddings, args.trainset_ratio)
+        experiment.set_trainsubset(args.trainset_ratio)
     else:
         raise ValueError("Training set ratio must be between 0 and 1!")
     ious = {}
@@ -720,8 +766,8 @@ def main():
             results.append(get_iou_mp(idx))
 
     for iou, idx, match_idx in results:
-        meta = info_df.iloc[idx]
-        category = meta["category"]
+        #meta = info_df.iloc[idx]
+        category = experiment.get_category(idx, train=False)
         if not category in ious:
             ious[category]=[]
         #symmetric = False
