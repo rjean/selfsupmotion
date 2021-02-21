@@ -233,6 +233,7 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
             crop_ratio: tuple = (0.75,1.33),
             val_augmentation: bool=True,
             crop_strategy: str="centroid",
+            sync_hflip=False,
             *args: typing.Any,
             **kwargs: typing.Any,
     ):
@@ -257,6 +258,7 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
         self.crop_ratio = crop_ratio
         self.val_augmentation= val_augmentation
         self.crop_strategy=crop_strategy
+        self.sync_hflip=sync_hflip
         # create temp dataset to get total sequence/sample count
         dataset = ObjectronHDF5FrameTupleParser(
             hdf5_path=self.hdf5_path,
@@ -342,7 +344,8 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
                 crop_ratio=self.crop_ratio,
                 use_hflip_augment=False,  # @@@@@ bad for keypoints?
                 shared_transform=self.shared_transform,
-                crop_strategy=self.crop_strategy
+                crop_strategy=self.crop_strategy,
+                sync_hflip=self.sync_hflip
             )
         else:
             return selfsupmotion.data.objectron.data_transforms.SimSiamFramePairTrainDataTransform(
@@ -353,7 +356,8 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
                 crop_scale=self.crop_scale,
                 crop_ratio=self.crop_ratio,
                 shared_transform=self.shared_transform,
-                crop_strategy=self.crop_strategy
+                crop_strategy=self.crop_strategy,
+                sync_hflip=self.sync_hflip
             )
 
     def val_transform(self):

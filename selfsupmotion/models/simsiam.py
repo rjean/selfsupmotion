@@ -292,7 +292,7 @@ class SimSiam(pl.LightningModule):
         f1, z1, h1 = self.online_network(img_1)
         f2, z2, h2 = self.online_network(img_2)
         if self.cuda_train_features is None: #Transfer to GPU once.
-            self.cuda_train_features = self.train_features.cuda()
+            self.cuda_train_features = self.train_features.half().cuda()
 
         loss = self.cosine_similarity(h1, z2) / 2 + self.cosine_similarity(h2, z1) / 2
 

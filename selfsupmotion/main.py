@@ -155,7 +155,8 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger):
             crop_scale=(hyper_params.get("crop_scale_min", 0.2),hyper_params.get("crop_scale_max", 1)),
             crop_ratio=(hyper_params.get("crop_ratio_min", 0.75),hyper_params.get("crop_ratio_max", 1.33)),
             val_augmentation=hyper_params.get("val_augmentation", True),
-            crop_strategy=hyper_params.get("crop_strategy", "centroid")
+            crop_strategy=hyper_params.get("crop_strategy", "centroid"),
+            sync_hflip=hyper_params.get("sync_hflip", False)
         )
         dm.setup()
 

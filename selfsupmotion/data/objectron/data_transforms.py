@@ -4,6 +4,7 @@ import albumentations
 import numpy as np
 import PIL
 import torchvision
+import random
 
 try:
     import thelper
@@ -99,7 +100,8 @@ class SimSiamFramePairTrainDataTransform(object):
             crop_ratio: typing.Tuple[float, float] = (1.0, 1.0),
             shared_transform = True,
             augmentation = True, #Will be used to disable augmentation on inference / validation.
-            crop_strategy = "centroid"
+            crop_strategy = "centroid",
+            sync_hflip= False,
     ) -> None:
         self.crop_height = crop_height
         self.input_height = input_height
@@ -111,6 +113,7 @@ class SimSiamFramePairTrainDataTransform(object):
         self.shared_transform = shared_transform
         self.enable_augmentation= augmentation
         self.crop_strategy = crop_strategy
+        self.sync_hflip=sync_hflip
 
         bbox_transforms = [
                 albumentations.LongestMaxSize(
@@ -184,6 +187,10 @@ class SimSiamFramePairTrainDataTransform(object):
             albumentations.HorizontalFlip(p=0.5),  # @@@@@@@@@ BAD W/O SEED WRAPPER?
         ])
 
+        self.sync_hflip_transform = albumentations.Compose([
+            albumentations.HorizontalFlip(p=1),  # @@@@@@@@@ BAD W/O SEED WRAPPER?
+        ])
+
     def __call__(self, sample):
         assert isinstance(sample, dict)
         # first, add the object crops to the sample dict
@@ -193,9 +200,12 @@ class SimSiamFramePairTrainDataTransform(object):
         shared_seed = np.random.randint(np.iinfo(np.int32).max)
         
         #if self.enable_augmentation: #Might be disabled for evalution or validation.
+        flip =  random.choice([True,False]) 
+
         for crop_idx in range(len(sample["OBJ_CROPS"])):
             if self.shared_transform:
                 np.random.seed(shared_seed)  # the wrappers will use numpy to re-seed themselves internally
+           
             if self.seed_wrap_augments:
                 assert "POINTS" not in sample, "missing impl"
                 aug_crop = self.augment_transform(sample["OBJ_CROPS"][crop_idx])
@@ -206,7 +216,15 @@ class SimSiamFramePairTrainDataTransform(object):
                     # the "xy" format somehow breaks when we have 2-coord kpts, this is why we pad to 4...
                     keypoint_params=albumentations.KeypointParams(format="xysa", remove_invisible=False),
                 )
+                
+                if self.sync_hflip and flip:
+                    aug_crop = self.sync_hflip_transform(
+                        image=aug_crop["image"],
+                        keypoints=aug_crop["keypoints"],
+                        keypoint_params=albumentations.KeypointParams(format="xysa", remove_invisible=False)
+                    )
                 output_keypoints.append(aug_crop["keypoints"])
+
             output_crops.append(self.convert_transform(PIL.Image.fromarray(aug_crop["image"])))
         sample["OBJ_CROPS"] = output_crops
         # finally, scrap the dumb padding around the 2d keypoints
