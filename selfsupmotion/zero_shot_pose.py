@@ -8,6 +8,7 @@ import random
 import math
 import re
 import h5py
+import io
 #import multiprocessing
 from multiprocessing import Pool
 #multiprocessing.set_start_method('spawn')
@@ -189,22 +190,6 @@ def get_objectron_bbox_colors():
 
 
 
-def parse_info_df(info_df, subset="valid"):
-    """Parses an embedding meta-data dataframe. (The output of SimSiam)
-
-    Args:
-        info_df (pd.DataFrame): Pandas Dataframe, as output by the "read experiment" function.
-        subset (str, optional): Which subset to use. Can be "train", "valid" or test. Defaults to "valid".
-    """
-    info_df["category"]=info_df["uid"].str.extract("(.*?)-")
-    info_df["sequence_uid"]=info_df["uid"].str.extract("(batch\-\d+_\d+_\d+)")
-    info_df["frame"]=info_df["uid"].str.extract("-(\d+)$")
-    info_df["video_id"]=info_df["uid"].str.extract("(batch\-\d+_\d+)")
-    info_df["object_id"]=info_df["uid"].str.extract("batch\-\d+_\d+_(\d+)")
-    info_df["batch_number"]=info_df["uid"].str.extract("(batch\-\d+)")
-    info_df["sequence_number"]=info_df["uid"].str.extract("batch\-\d+_(\d+)_\d+")
-    info_df["filepath"]=f"/home/raphael/datasets/objectron/96x96/{subset}/" + info_df["category"] +"/" + info_df["sequence_uid"] +"." + info_df["frame"] + ".jpg"
-    info_df["filepath_full"]="/home/raphael/datasets/objectron/640x480_full/" + info_df["category"] +"/" + info_df["sequence_uid"] +"." + info_df["frame"] + ".jpg"
 
 
 
@@ -539,6 +524,15 @@ def get_iou_mp(idx:int #, symmetric=False, rescale=False,
     return best_iou , idx, match_idx
 
 class ExperimentHandlerFile():
+    def __init__(self, experiment:str=None):
+        self.info_df = None
+        self.train_info_df = None
+        self.hdf5_dataset = None
+        if experiment:
+            self.read_experiment(experiment)
+        self.source_image_width = 1440
+        self.source_image_height = 1920
+
     def read_experiment(self, experiment: str):
         """Read the output of a SimSiam experiment folder. (Embeddings and metadata)
 
@@ -566,6 +560,9 @@ class ExperimentHandlerFile():
             train_embeddings = load_fn(train_old_filename)
         train_info = numpy.load(f"{experiment}/train_info.npy")
         assert train_info.shape[0]==2
+        self.init_experiment(embeddings, info, train_embeddings, train_info)
+
+    def init_experiment(self, embeddings, info, train_embeddings, train_info):
         info_df = pd.DataFrame(info.T)
         train_info_df = pd.DataFrame(train_info.T)
         info_df_columns = {0:"category_id",1:"uid"}
@@ -576,19 +573,15 @@ class ExperimentHandlerFile():
             self.hdf5_dataset = h5py.File('/home/raphael/datasets/objectron/extract_s5_raw.hdf5','r')
         else:
             self.mode = "raw"
-        parse_info_df(info_df)
-        parse_info_df(train_info_df, subset="train")
+        self.parse_info_df(info_df)
+        self.parse_info_df(train_info_df, subset="train")
         assert train_embeddings.shape[0] == embeddings.shape[1]
         self.embeddings = embeddings
         self.train_embeddings = train_embeddings
         self.info_df = info_df
         self.train_info_df = train_info_df
 
-    def __init__(self, experiment):
-        self.info_df = None
-        self.train_info_df = None
-        self.hdf5_dataset = None
-        self.read_experiment(experiment)
+
 
     def get_points(self, idx: int, train=False):
         if self.mode=="raw":
@@ -600,11 +593,28 @@ class ExperimentHandlerFile():
         else:
             raise ValueError(f"Mode not supported: {self.mode}")
 
-    def _hdf5_parse_uid(self, idx, train=False):
+    def get_image(self,idx, train=False):
+        df = self._get_df(train)
+        if self.mode=="hdf5":
+            category, sequence, image_id  = self._hdf5_parse_uid(idx,train)
+            image_idx = list(self.hdf5_dataset[category][sequence]["IMAGE_ID"]).index(image_id)
+            jpeg_data = self.hdf5_dataset[category][sequence]["IMAGE"][image_idx]
+            #image = Image.frombytes('RGBA', (128,128), jpeg_data, 'raw')
+            image = Image.open(io.BytesIO(jpeg_data))
+            #img= cv2.imdecode(self.hdf5_dataset[category][sequence]["IMAGE"][image_idx],cv2.IMREAD_ANYCOLOR)
+            return image
+        else:
+            raise ValueError("To be implemented!")
+
+    def _get_df(self, train):
         if train:
             df = self.train_info_df
         else:
             df = self.info_df
+        return df
+
+    def _hdf5_parse_uid(self, idx, train=False):
+        df = self._get_df(train)
         uid = df.iloc[idx]["uid"]
         m = re.match("hdf5_(\w+)/(\d+)_(\d+)", uid)
         category, sequence, image_id = m[1],m[2], int(m[3])
@@ -745,10 +755,7 @@ class ExperimentHandlerFile():
         self.train_embeddings = train_embeddings
 
     def get_category(self, idx, train=False):
-        if train:
-            df = self.train_info_df
-        else:
-            df = self.info_df
+        df = self._get_df(train)
         if self.mode=="raw":
             return df.iloc[idx]["category"]
         elif self.mode=="hdf5":
@@ -756,6 +763,30 @@ class ExperimentHandlerFile():
             return category
         else:
             raise ValueError(f"Mode not supported: {self.mode}") 
+
+    def get_sequence_uid(self, idx, train=False):
+        df = self._get_df(train)
+        return df.iloc[idx]["sequence_uid"]
+            
+
+    def parse_info_df(self, info_df, subset="valid"):
+        """Parses an embedding meta-data dataframe. (The output of SimSiam)
+
+        Args:
+            info_df (pd.DataFrame): Pandas Dataframe, as output by the "read experiment" function.
+            subset (str, optional): Which subset to use. Can be "train", "valid" or test. Defaults to "valid".
+        """
+        info_df["category"]=info_df["uid"].str.extract("(.*?)-")
+        info_df["sequence_uid"]=info_df["uid"].str.extract("(batch\-\d+_\d+_\d+)")
+        info_df["frame"]=info_df["uid"].str.extract("-(\d+)$")
+        info_df["video_id"]=info_df["uid"].str.extract("(batch\-\d+_\d+)")
+        info_df["object_id"]=info_df["uid"].str.extract("batch\-\d+_\d+_(\d+)")
+        info_df["batch_number"]=info_df["uid"].str.extract("(batch\-\d+)")
+        info_df["sequence_number"]=info_df["uid"].str.extract("batch\-\d+_(\d+)_\d+")
+        info_df["filepath"]=f"/home/raphael/datasets/objectron/96x96/{subset}/" + info_df["category"] +"/" + info_df["sequence_uid"] +"." + info_df["frame"] + ".jpg"
+        info_df["filepath_full"]="/home/raphael/datasets/objectron/640x480_full/" + info_df["category"] +"/" + info_df["sequence_uid"] +"." + info_df["frame"] + ".jpg"
+        if self.mode=="hdf5":
+            info_df["sequence_uid"] = info_df["uid"].str.extract("hdf5_(\w+/\d+)_")
 
 def main():
     global args, experiment, ground_plane, symmetric, rescale, all_match_idxs, use_cupy
