@@ -185,6 +185,8 @@ class SimSiam(pl.LightningModule):
         self.warmup_epochs = hyper_params.get("warmup_epochs", 10)
         self.max_epochs = hyper_params.get("max_epochs", 100)
 
+        self.accumulate_grad_batches_custom = hyper_params.get("accumulate_grad_batches_custom",1)
+
         self.init_model()
 
         # compute iters per epoch
@@ -402,8 +404,9 @@ class SimSiam(pl.LightningModule):
         #if self.trainer.amp_backend == AMPType.NATIVE:
         #    optimizer_closure()
         #    self.trainer.scaler.step(optimizer)
-        if self.trainer.amp_backend == AMPType.APEX:
-            optimizer_closure()
-            optimizer.step()
-        else:
-            optimizer.step(closure=optimizer_closure)
+        if (batch_idx%self.accumulate_grad_batches_custom)==0:
+            if self.trainer.amp_backend == AMPType.APEX:
+                optimizer_closure()
+                optimizer.step()
+            else:
+                optimizer.step(closure=optimizer_closure)

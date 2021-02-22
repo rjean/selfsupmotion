@@ -205,7 +205,8 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger):
               patience=hyper_params['patience'], output=output_dir,
               max_epoch=hyper_params['max_epoch'], use_progress_bar=not args.disable_progressbar,
               start_from_scratch=args.start_from_scratch, mlf_logger=mlf_logger, precision=hyper_params["precision"],
-              early_stop_metric = hyper_params["early_stop_metric"]
+              early_stop_metric = hyper_params["early_stop_metric"],
+              accumulate_grad_batches = hyper_params.get("accumulate_grad_batches",1),
               )
 
 import torch
