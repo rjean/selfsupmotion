@@ -228,6 +228,12 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
             split_seed: int = 1337,
             pin_memory: bool = False,
             drop_last: bool = False,
+            shared_transform: bool=True,
+            crop_scale: tuple = (0.2,1),
+            crop_ratio: tuple = (0.75,1.33),
+            val_augmentation: bool=True,
+            crop_strategy: str="centroid",
+            sync_hflip=False,
             *args: typing.Any,
             **kwargs: typing.Any,
     ):
@@ -247,6 +253,12 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
         self.split_seed = split_seed if split_seed is not None else 1337  # keep this static between runs
         self.pin_memory = pin_memory
         self.drop_last = drop_last
+        self.shared_transform = shared_transform
+        self.crop_scale = crop_scale
+        self.crop_ratio = crop_ratio
+        self.val_augmentation= val_augmentation
+        self.crop_strategy=crop_strategy
+        self.sync_hflip=sync_hflip
         # create temp dataset to get total sequence/sample count
         dataset = ObjectronHDF5FrameTupleParser(
             hdf5_path=self.hdf5_path,
@@ -273,38 +285,53 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
         assert len(np.intersect1d(self.valid_sample_count, self.train_sample_count)) == 0
         assert self.train_sample_count > 0 and self.valid_sample_count > 0
 
-    def _create_dataloader(
-            self,
-            train: bool = True,
-            transforms: typing.Optional[typing.Any] = None,
-    ) -> torch.utils.data.DataLoader:
-        return torch.utils.data.DataLoader(
-            dataset=ObjectronHDF5FrameTupleParser(
+    def setup(self, stage= None):
+        if self.val_transforms is None:
+            self.val_transforms = self.val_transform()
+        if self.train_transforms is None:
+            self.train_transforms = self.train_transform()
+
+        self.val_dataset = ObjectronHDF5FrameTupleParser(
                 hdf5_path=self.hdf5_path,
-                seq_subset=self.train_seq_subset if train else self.valid_seq_subset,
+                seq_subset=self.valid_seq_subset,
                 tuple_length=self.tuple_length,
                 frame_offset=self.frame_offset,
                 tuple_offset=self.tuple_offset,
                 _target_fields=["IMAGE", "CENTROID_2D_IM"],
-                _transforms=transforms,
-            ),
+                _transforms=self.val_transforms,
+            )
+
+        self.train_dataset = ObjectronHDF5FrameTupleParser(
+                hdf5_path=self.hdf5_path,
+                seq_subset=self.train_seq_subset,
+                tuple_length=self.tuple_length,
+                frame_offset=self.frame_offset,
+                tuple_offset=self.tuple_offset,
+                _target_fields=["IMAGE", "CENTROID_2D_IM"],
+                _transforms=self.train_transforms,
+            )
+
+    def train_dataloader(self, evaluation=False) -> torch.utils.data.DataLoader:
+        if evaluation: #We don't want transformations for finding nearest neighbors.
+            self.train_dataset.transforms = self.val_transforms
+
+        return torch.utils.data.DataLoader(
+            self.train_dataset,
             batch_size=self.batch_size,
-            shuffle=train,
+            shuffle=True,
             num_workers=self.num_workers,
             drop_last=self.drop_last,
             pin_memory=self.pin_memory
         )
 
-    def train_dataloader(self) -> torch.utils.data.DataLoader:
-        return self._create_dataloader(
-            train=True,
-            transforms=self.train_transform() if self.train_transforms is None else self.train_transforms,
-        )
-
-    def val_dataloader(self) -> torch.utils.data.DataLoader:
-        return self._create_dataloader(
-            train=False,
-            transforms=self.val_transform() if self.val_transforms is None else self.val_transforms,
+    def val_dataloader(self, evaluation=False) -> torch.utils.data.DataLoader:
+        return torch.utils.data.DataLoader(
+            self.val_dataset,
+            batch_size=self.batch_size,
+            shuffle=True,
+            num_workers=self.num_workers,
+            drop_last=self.drop_last,
+            pin_memory=self.pin_memory
         )
 
     def train_transform(self):
@@ -314,9 +341,12 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
                 input_height=self.image_size,
                 gaussian_blur=self.gaussian_blur,
                 jitter_strength=self.jitter_strength,
-                crop_scale=(0.6, 1.0),
-                crop_ratio=(0.75, 1.3333),
+                crop_scale=self.crop_scale,
+                crop_ratio=self.crop_ratio,
                 use_hflip_augment=False,  # @@@@@ bad for keypoints?
+                shared_transform=self.shared_transform,
+                crop_strategy=self.crop_strategy,
+                sync_hflip=self.sync_hflip
             )
         else:
             return selfsupmotion.data.objectron.data_transforms.SimSiamFramePairTrainDataTransform(
@@ -324,6 +354,11 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
                 input_height=self.image_size,
                 gaussian_blur=self.gaussian_blur,
                 jitter_strength=self.jitter_strength,
+                crop_scale=self.crop_scale,
+                crop_ratio=self.crop_ratio,
+                shared_transform=self.shared_transform,
+                crop_strategy=self.crop_strategy,
+                sync_hflip=self.sync_hflip
             )
 
     def val_transform(self):
@@ -342,6 +377,8 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
                 input_height=self.image_size,
                 gaussian_blur=self.gaussian_blur,
                 jitter_strength=self.jitter_strength,
+                augmentation=self.val_augmentation,
+                crop_strategy=self.crop_strategy
             )
 
 

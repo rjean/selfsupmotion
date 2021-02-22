@@ -111,7 +111,8 @@ def train_impl(
         start_from_scratch,
         mlf_logger,
         precision,
-        early_stop_metric
+        early_stop_metric,
+        accumulate_grad_batches
 ):  # pragma: no cover
     """Main training loop implementation.
 
@@ -156,18 +157,21 @@ def train_impl(
         resume_from_checkpoint = None
 
     #if 
+    if early_stop_metric!="none":
+        early_stopping = pl.callbacks.EarlyStopping(early_stop_metric, mode="auto", patience=patience, verbose=use_progress_bar)
+        callbacks=[early_stopping]
+    else:
+        callbacks=[]
 
-    early_stopping = pl.callbacks.EarlyStopping(early_stop_metric, mode="auto", patience=patience, verbose=use_progress_bar)
     printer_callback = pl_bolts.callbacks.PrintTableMetricsCallback()
-
-    trainer = pl.Trainer(
-        # @@@@@@@@@@@ TODO check if we can add an online evaluator w/ callback
-        callbacks=[
-            early_stopping,
+    callbacks = callbacks + [
             best_checkpoint_callback,
             last_checkpoint_callback,
             printer_callback,
-        ],
+        ]
+    trainer = pl.Trainer(
+        # @@@@@@@@@@@ TODO check if we can add an online evaluator w/ callback
+        callbacks=callbacks,
         checkpoint_callback=True,
         logger=mlf_logger,
         max_epochs=max_epoch,
@@ -177,6 +181,7 @@ def train_impl(
         precision=precision,
         amp_level="O1",
         accelerator=None,  # @@@@@@@@@ TODO CHECK ME OUT w/ precision arg too
+        accumulate_grad_batches=accumulate_grad_batches
     )
 
     trainer.fit(model, datamodule=datamodule)

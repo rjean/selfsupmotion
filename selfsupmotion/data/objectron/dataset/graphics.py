@@ -2,7 +2,7 @@
 import cv2
 import numpy as np
 
-import objectron.dataset.box as Box
+import selfsupmotion.data.objectron.dataset.box as Box
 
 _LINE_TICKNESS = 10
 _POINT_RADIUS = 10

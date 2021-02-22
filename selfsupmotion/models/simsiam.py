@@ -137,6 +137,20 @@ class SiameseArm(nn.Module):
         h = self.predictor(z)
         return y, z, h
 
+import torchvision
+import cv2
+
+def save_mosaic(filename, tensor):
+    inv_normalize = torchvision.transforms.Normalize(
+    mean=[-0.485/0.229, -0.456/0.224, -0.406/0.225],
+    std=[1/0.229, 1/0.224, 1/0.255])
+    #grid = torchvision.utils.make_grid(tensor)
+    tensor = inv_normalize(tensor)
+    torchvision.utils.save_image(tensor, filename)
+    #img = img.detach().cpu().numpy().astype(np.uint8)
+    #img = np.swapaxes(img,2,0)
+    #img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+    #return cv2.imwrite(filename, img)
 
 class SimSiam(pl.LightningModule):
 
@@ -170,6 +184,8 @@ class SimSiam(pl.LightningModule):
         self.learning_rate = hyper_params.get("learning_rate", 1e-3)
         self.warmup_epochs = hyper_params.get("warmup_epochs", 10)
         self.max_epochs = hyper_params.get("max_epochs", 100)
+
+        self.accumulate_grad_batches_custom = hyper_params.get("accumulate_grad_batches_custom",1)
 
         self.init_model()
 
@@ -238,6 +254,12 @@ class SimSiam(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         assert len(batch["OBJ_CROPS"]) == 2
         img_1, img_2 = batch["OBJ_CROPS"]
+
+        if batch_idx==0:
+            save_mosaic("img_1_train.jpg", img_1)
+            save_mosaic("img_2_train.jpg", img_2)
+            
+        #assert img_1.shape==torch.Size([32, 3, 224, 224])
         uid = batch["UID"]
         y = batch["CAT_ID"]
 
@@ -250,9 +272,10 @@ class SimSiam(pl.LightningModule):
 
         base = batch_idx*self.batch_size
         train_features= F.normalize(f1.detach(), dim=1).cpu()
+        #assert train_features.shape == torch.Size([32, 2048])
         self.train_meta+=uid
-        self.train_features[base:base+len(img_1)]=train_features
-        self.train_targets[base:base+len(img_1)]=y
+        self.train_features[base:base+train_features.shape[0]]=train_features
+        self.train_targets[base:base+train_features.shape[0]]=y
         # log results
         self.log("train_loss", loss)
         return loss
@@ -260,6 +283,10 @@ class SimSiam(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         assert len(batch["OBJ_CROPS"]) == 2
         img_1, img_2 = batch["OBJ_CROPS"]
+
+        if batch_idx==0:
+            save_mosaic("img_1_val.jpg", img_1)
+            save_mosaic("img_2_val.jpg", img_2)
         uid = batch["UID"]
         y = batch["CAT_ID"]
 
@@ -267,7 +294,7 @@ class SimSiam(pl.LightningModule):
         f1, z1, h1 = self.online_network(img_1)
         f2, z2, h2 = self.online_network(img_2)
         if self.cuda_train_features is None: #Transfer to GPU once.
-            self.cuda_train_features = self.train_features.cuda()
+            self.cuda_train_features = self.train_features.half().cuda()
 
         loss = self.cosine_similarity(h1, z2) / 2 + self.cosine_similarity(h2, z1) / 2
 
@@ -377,8 +404,9 @@ class SimSiam(pl.LightningModule):
         #if self.trainer.amp_backend == AMPType.NATIVE:
         #    optimizer_closure()
         #    self.trainer.scaler.step(optimizer)
-        if self.trainer.amp_backend == AMPType.APEX:
-            optimizer_closure()
-            optimizer.step()
-        else:
-            optimizer.step(closure=optimizer_closure)
+        if ((batch_idx+1)%self.accumulate_grad_batches_custom)==0:
+            if self.trainer.amp_backend == AMPType.APEX:
+                optimizer_closure()
+                optimizer.step()
+            else:
+                optimizer.step(closure=optimizer_closure)

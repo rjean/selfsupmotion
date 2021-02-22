@@ -108,6 +108,10 @@ def main():
     if args.tmp_folder is not None:
         rsync_folder(output_dir + os.path.sep, args.output)
 
+def save_list_to_file(filename, string_list):
+    with open(filename,"w") as f:
+        for string in string_list:
+            f.write(f"{string}\n")
 
 def run(args, data_dir, output_dir, hyper_params, mlf_logger):
     """Setup and run the dataloaders, training loops, etc.
@@ -147,7 +151,15 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger):
             jitter_strength=hyper_params.get("jitter_strength", 1.0),
             batch_size=hyper_params["batch_size"],
             num_workers=hyper_params["num_workers"],
+            shared_transform=hyper_params.get("shared_transform", True),
+            crop_scale=(hyper_params.get("crop_scale_min", 0.2),hyper_params.get("crop_scale_max", 1)),
+            crop_ratio=(hyper_params.get("crop_ratio_min", 0.75),hyper_params.get("crop_ratio_max", 1.33)),
+            val_augmentation=hyper_params.get("val_augmentation", True),
+            crop_strategy=hyper_params.get("crop_strategy", "centroid"),
+            sync_hflip=hyper_params.get("sync_hflip", False)
         )
+        dm.setup()
+
     elif args.data_module=="file":
         dm = selfsupmotion.data.objectron.file_datamodule.ObjectronFileDataModule(
             num_workers=hyper_params["num_workers"],
@@ -160,7 +172,7 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger):
 
     if "num_samples" not in hyper_params:  
         if hasattr(dm, "train_sample_count"):
-            hyper_params["num_samples"] = dm.train_sample_count
+            hyper_params["num_samples"] = len(dm.train_dataset)
         elif hasattr(dm, "train_dataset"):
             hyper_params["num_samples"] = len(dm.train_dataset)
         else:
@@ -168,7 +180,7 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger):
 
     if "num_samples_valid" not in hyper_params:
         if hasattr(dm, "valid_sample_count"):
-            hyper_params["num_samples_valid"] = dm.valid_sample_count
+            hyper_params["num_samples_valid"] = len(dm.val_dataset)
         elif hasattr(dm, "val_dataset"):
             hyper_params["num_samples_valid"] = len(dm.val_dataset)
         else:
@@ -176,6 +188,9 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger):
 
     if "early_stop_metric" not in hyper_params:
         hyper_params["early_stop_metric"]="val_loss"
+
+    save_list_to_file(f"{output_dir}/train_sequences.txt", dm.train_dataset.seq_subset)
+    save_list_to_file(f"{output_dir}/val_sequences.txt", dm.val_dataset.seq_subset)
 
     if args.embeddings:
         if args.embeddings_ckpt is None:
@@ -190,7 +205,8 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger):
               patience=hyper_params['patience'], output=output_dir,
               max_epoch=hyper_params['max_epoch'], use_progress_bar=not args.disable_progressbar,
               start_from_scratch=args.start_from_scratch, mlf_logger=mlf_logger, precision=hyper_params["precision"],
-              early_stop_metric = hyper_params["early_stop_metric"]
+              early_stop_metric = hyper_params["early_stop_metric"],
+              accumulate_grad_batches = hyper_params.get("accumulate_grad_batches",1),
               )
 
 import torch
@@ -213,7 +229,7 @@ def generate_embeddings(args, model, datamodule, train=True, image_size=224):
     
     model.online_network=model.online_network.to(args.embeddings_device)
     #max_batch = int(args.subset_size*len(dataset)/args.batch_size)
-    all_features = torch.zeros((model.online_network.encoder.fc.in_features, len(dataset))).cuda()
+    all_features = torch.zeros((model.online_network.encoder.fc.in_features, len(dataset))).half().cuda()
         #train_features = torch.zeros((encoder.fc.in_features, max_batch*args.batch_size))
         
     #train_labels = torch.zeros(max_batch*args.batch_size, dtype=torch.int64).cuda()
@@ -224,7 +240,7 @@ def generate_embeddings(args, model, datamodule, train=True, image_size=224):
         for batch in local_progress:
             images1 = batch["OBJ_CROPS"][0]
             meta = batch["UID"]
-            targets = batch["CLASS"]
+            targets = batch["CAT_ID"]
             #images1, _, meta= data
             #images1, _ = images
             images1 = images1.to(args.embeddings_device, non_blocking=True)
