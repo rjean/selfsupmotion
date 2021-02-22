@@ -373,7 +373,7 @@ class SimSiam(pl.LightningModule):
 
         return optimizer
 
-    def optimizer_step(
+    def optimizer_step_old(
             self,
             epoch: int,
             batch_idx: int,
