@@ -79,8 +79,11 @@ class ObjectronDataset(torch.utils.data.Dataset):
         #
         #self.
         self.sequences_by_categories = {}
+        self.seq_subset = []
         for category in self.categories:
-            self.sequences_by_categories[category] = self._get_sequences(category, self.split)
+            sequences = self._get_sequences(category, self.split)
+            self.sequences_by_categories[category] = sequences
+            self.seq_subset.append(sequences)
 
         self._load_samples(self.split)
 
@@ -261,6 +264,7 @@ class ObjectronFileDataModule(pytorch_lightning.LightningDataModule):
             self.train_sample_count = len(self.train_dataset)
             self.valid_sample_count = len(self.val_dataset)
             self.issetup=True
+            #self.seq_subset = self.sequence_list
     
     def get_objectron_transform(self, image_size, mean_std=imagenet_mean_std, evaluation=False):
         if not evaluation:
