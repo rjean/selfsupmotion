@@ -1,8 +1,8 @@
 batch_size: 64
-accumulate_grad_batches: 8 # For stock optimizer step
+accumulate_grad_batches: 1 # For stock optimizer step
 #accumulate_grad_batches_custom: 8 # For custom optimizer step on SimSiam
 optimizer: sgd
-learning_rate: 0.03
+learning_rate: 0.0075
 weight_decay: 0.0005
 lars_wrapper: False
 temperature: 0.1

@@ -373,7 +373,7 @@ class SimSiam(pl.LightningModule):
 
         return optimizer
 
-    def optimizer_step_old(
+    def optimizer_step(
             self,
             epoch: int,
             batch_idx: int,
@@ -404,7 +404,7 @@ class SimSiam(pl.LightningModule):
         #if self.trainer.amp_backend == AMPType.NATIVE:
         #    optimizer_closure()
         #    self.trainer.scaler.step(optimizer)
-        if (batch_idx%self.accumulate_grad_batches_custom)==0:
+        if ((batch_idx+1)%self.accumulate_grad_batches_custom)==0:
             if self.trainer.amp_backend == AMPType.APEX:
                 optimizer_closure()
                 optimizer.step()
