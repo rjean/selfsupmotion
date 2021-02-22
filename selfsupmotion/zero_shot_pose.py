@@ -6,6 +6,8 @@ import pandas as pd
 import open3d as o3d
 import random
 import math
+import re
+import h5py
 #import multiprocessing
 from multiprocessing import Pool
 #multiprocessing.set_start_method('spawn')
@@ -524,7 +526,7 @@ def get_iou_mp(idx:int #, symmetric=False, rescale=False,
     #    else:
     #        points3d_processed, points3d_valid = get_match_aligned_points(idx, match_idx, experiment.info_df, train_info_df, ground_truth=True)
     #else:
-    _, points3d_valid = experiment._raw_get_points(idx, train=False)
+    _, points3d_valid = experiment.get_points(idx, train=False)
     points3d_processed = get_bounding_box(idx, match_idx, experiment, adjust_scale=True)
     #if show:
     #    visualize(points3d_valid, points3d_train_rotated, points3d_train_aligned)
@@ -569,6 +571,11 @@ class ExperimentHandlerFile():
         info_df_columns = {0:"category_id",1:"uid"}
         train_info_df = train_info_df.rename(columns=info_df_columns)
         info_df = info_df.rename(columns=info_df_columns)
+        if "hdf5" in train_info_df.iloc[0][1]:
+            self.mode = "hdf5"
+            self.hdf5_dataset = h5py.File('/home/raphael/datasets/objectron/extract_s5_raw.hdf5','r')
+        else:
+            self.mode = "raw"
         parse_info_df(info_df)
         parse_info_df(train_info_df, subset="train")
         assert train_embeddings.shape[0] == embeddings.shape[1]
@@ -580,10 +587,28 @@ class ExperimentHandlerFile():
     def __init__(self, experiment):
         self.info_df = None
         self.train_info_df = None
+        self.hdf5_dataset = None
         self.read_experiment(experiment)
 
     def get_points(self, idx: int, train=False):
-        return self._raw_get_points(idx, train)
+        if self.mode=="raw":
+            return self._raw_get_points(idx, train)
+        elif self.mode=="hdf5":
+            category, sequence, image_id  = self._hdf5_parse_uid(idx,train)
+            image_idx = list(self.hdf5_dataset[category][sequence]["IMAGE_ID"]).index(image_id)
+            return self.hdf5_dataset[category][sequence]["POINT_2D"][image_idx].reshape(9,3), self.hdf5_dataset[category][sequence]["POINT_3D"][image_idx].reshape(9,3)
+        else:
+            raise ValueError(f"Mode not supported: {self.mode}")
+
+    def _hdf5_parse_uid(self, idx, train=False):
+        if train:
+            df = self.train_info_df
+        else:
+            df = self.info_df
+        uid = df.iloc[idx]["uid"]
+        m = re.match("hdf5_(\w+)/(\d+)_(\d+)", uid)
+        category, sequence, image_id = m[1],m[2], int(m[3])
+        return category, sequence, image_id 
 
     def _raw_get_points(self, idx: int, train=False):
         """Get 2d and 3d points for a specific frame.
@@ -633,7 +658,14 @@ class ExperimentHandlerFile():
         return sequence
 
     def get_plane(self, idx: int, train=False):
-        return self._raw_get_plane(idx, train)
+        if self.mode=="raw":
+            return self._raw_get_plane(idx, train)
+        elif self.mode=="hdf5":
+            category, sequence, image_id  = self._hdf5_parse_uid(idx,train)
+            image_idx = list(self.hdf5_dataset[category][sequence]["IMAGE_ID"]).index(image_id)
+            return self.hdf5_dataset[category][sequence]["PLANE_CENTER"][image_idx], self.hdf5_dataset[category][sequence]["PLANE_NORMAL"][image_idx]
+        else:
+            raise ValueError(f"Mode not supported: {self.mode}")
  
     def _raw_get_plane(self, idx: int, train=False):
         """Get object plane for a specific camera frame.
@@ -684,7 +716,14 @@ class ExperimentHandlerFile():
         return np.array(camera.intrinsics).reshape(3,3)
 
     def get_intrinsics(self, idx, train=False):
-        return self._raw_get_intrinsics(idx, train)
+        if self.mode=="raw":
+            return self._raw_get_intrinsics(idx, train)
+        elif self.mode=="hdf5":
+            category, sequence, image_id  = self._hdf5_parse_uid(idx,train)
+            image_idx = list(self.hdf5_dataset[category][sequence]["IMAGE_ID"]).index(image_id)
+            return self.hdf5_dataset[category][sequence]["INTRINSIC_MATRIX"][image_idx].reshape(3,3)
+        else:
+            raise ValueError(f"Mode not supported: {self.mode}")
 
     @staticmethod
     def _get_subset(info_df, embeddings, ratio):
@@ -710,7 +749,13 @@ class ExperimentHandlerFile():
             df = self.train_info_df
         else:
             df = self.info_df
-        return df.iloc[idx]["category"]
+        if self.mode=="raw":
+            return df.iloc[idx]["category"]
+        elif self.mode=="hdf5":
+            category, _, _  = self._hdf5_parse_uid(idx,train)
+            return category
+        else:
+            raise ValueError(f"Mode not supported: {self.mode}") 
 
 def main():
     global args, experiment, ground_plane, symmetric, rescale, all_match_idxs, use_cupy
