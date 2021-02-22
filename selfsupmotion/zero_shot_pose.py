@@ -482,9 +482,7 @@ def describe_intrinsics(intrinsics: np.array):
 #train_embeddings = None
 #train_info_df = None
 experiment = None
-#ground_plane = True
-#symmetric = False
-#rescale = False
+
 args = None
 all_match_idxs = None
 import argparse
@@ -526,7 +524,7 @@ def get_iou_mp(idx:int #, symmetric=False, rescale=False,
     #    else:
     #        points3d_processed, points3d_valid = get_match_aligned_points(idx, match_idx, experiment.info_df, train_info_df, ground_truth=True)
     #else:
-    _, points3d_valid = experiment.get_points(idx, train=False)
+    _, points3d_valid = experiment._raw_get_points(idx, train=False)
     points3d_processed = get_bounding_box(idx, match_idx, experiment, adjust_scale=True)
     #if show:
     #    visualize(points3d_valid, points3d_train_rotated, points3d_train_aligned)
@@ -553,8 +551,6 @@ class ExperimentHandlerFile():
         if not use_cupy:
             load_fn = np.load
         
-
-
         embeddings = load_fn(f"{experiment}/embeddings.npy")
         if embeddings.shape [1]>embeddings.shape [0]:
             embeddings=embeddings.T
@@ -587,6 +583,9 @@ class ExperimentHandlerFile():
         self.read_experiment(experiment)
 
     def get_points(self, idx: int, train=False):
+        return self._raw_get_points(idx, train)
+
+    def _raw_get_points(self, idx: int, train=False):
         """Get 2d and 3d points for a specific frame.
 
         Args:
@@ -602,7 +601,7 @@ class ExperimentHandlerFile():
             df = self.info_df
 
         idx = fix_idx(idx)
-        sequence_annotations = self.get_sequence_annotations(df.iloc[idx]["category"], df.iloc[idx]["batch_number"], df.iloc[idx]["sequence_number"])
+        sequence_annotations = self._raw_get_sequence_annotations(df.iloc[idx]["category"], df.iloc[idx]["batch_number"], df.iloc[idx]["sequence_number"])
         frame = int(df.iloc[idx]["frame"])
         object_id = int(df.iloc[idx]["object_id"])
         keypoints = sequence_annotations.frame_annotations[frame].annotations[object_id].keypoints
@@ -615,7 +614,7 @@ class ExperimentHandlerFile():
             points_3d.append(point_3d)
         return np.array(points_2d), np.array(points_3d)
 
-    def get_sequence_annotations(self, category: str, batch_number: str, sequence_number: str, annotations_path="/home/raphael/datasets/objectron/annotations"):
+    def _raw_get_sequence_annotations(self, category: str, batch_number: str, sequence_number: str, annotations_path="/home/raphael/datasets/objectron/annotations"):
         """Get annotation data for a video sequence.
 
         Args:
@@ -634,6 +633,9 @@ class ExperimentHandlerFile():
         return sequence
 
     def get_plane(self, idx: int, train=False):
+        return self._raw_get_plane(idx, train)
+ 
+    def _raw_get_plane(self, idx: int, train=False):
         """Get object plane for a specific camera frame.
 
         Args:
@@ -648,7 +650,7 @@ class ExperimentHandlerFile():
         else:
             df = self.info_df
         idx = int(idx)
-        sequence_annotations = self.get_sequence_annotations(df.iloc[idx]["category"], df.iloc[idx]["batch_number"], df.iloc[idx]["sequence_number"])
+        sequence_annotations = self._raw_get_sequence_annotations(df.iloc[idx]["category"], df.iloc[idx]["batch_number"], df.iloc[idx]["sequence_number"])
         frame = int(df.iloc[idx]["frame"])
 
         plane_center = sequence_annotations.frame_annotations[frame].plane_center
@@ -657,7 +659,7 @@ class ExperimentHandlerFile():
         return np.array(plane_center), np.array(plane_normal)
 
     
-    def _get_camera(self, idx:int, train=False):
+    def _raw_get_camera(self, idx:int, train=False):
         """Get camera information for a specific trame. 
 
         Args:
@@ -672,14 +674,17 @@ class ExperimentHandlerFile():
         else:
             df = self.info_df
         idx = fix_idx(idx)
-        sequence_annotations = self.get_sequence_annotations(df.iloc[idx]["category"], df.iloc[idx]["batch_number"], df.iloc[idx]["sequence_number"])
+        sequence_annotations = self._raw_get_sequence_annotations(df.iloc[idx]["category"], df.iloc[idx]["batch_number"], df.iloc[idx]["sequence_number"])
         frame = int(df.iloc[idx]["frame"])
         frame_annotation = sequence_annotations.frame_annotations[frame]
         return frame_annotation.camera
 
-    def get_intrinsics(self, idx, train=False):
-        camera = self._get_camera(idx, train)
+    def _raw_get_intrinsics(self, idx, train=False):
+        camera = self._raw_get_camera(idx, train)
         return np.array(camera.intrinsics).reshape(3,3)
+
+    def get_intrinsics(self, idx, train=False):
+        return self._raw_get_intrinsics(idx, train)
 
     @staticmethod
     def _get_subset(info_df, embeddings, ratio):
@@ -733,7 +738,7 @@ def main():
     
     if args.cpu:
         use_cupy=False
-    #embeddings, info_df, train_embeddings, train_info_df = read_experiment(args.experiment)
+
     experiment = ExperimentHandlerFile(args.experiment)
 
     all_match_idxs = find_all_match_idx(experiment.embeddings, experiment.train_embeddings, 0)
@@ -766,19 +771,13 @@ def main():
             results.append(get_iou_mp(idx))
 
     for iou, idx, match_idx in results:
-        #meta = info_df.iloc[idx]
         category = experiment.get_category(idx, train=False)
         if not category in ious:
             ious[category]=[]
-        #symmetric = False
-        #if category=="cup" or category=="bottle":
-        #    symmetric=True
-        #results[idx] = get_iou(idx, embeddings, info_df, train_embeddings, train_info_df, symmetric=args.symmetric, rescale=args.rescale)
-        #iou, match_idx= get_iou(idx, embeddings, info_df, train_embeddings, train_info_df, symmetric=args.symmetric, rescale=args.rescale)
         if iou > threshold:
             valid_count+=1
         ious[category].append(float(iou))
-    #get_iou.wait()
+
     ious = pd.DataFrame.from_dict(ious, orient='index').T
     ious.to_csv("raw_results.txt")
     print(f"{'category' : <10}\tmean iou\tmedian iou\tAP at iou_t")
@@ -786,13 +785,6 @@ def main():
         column = ious[category]
         ap_at_iout=(column > args.iou_t).sum()/column.notnull().sum()
         print(f"{category: <10}\t{column.mean():0.2f}\t\t{column.median():0.2f}\t\t{ap_at_iout:0.2f}")
-
-
-    #ious = np.array(ious)
-    #median = np.median(ious)
-    #mean = ious.mean()
-    #valid_percentage = valid_count/len(subset) * 100
-    #print(f"Median IoU: {median}, Mean IoU: {mean}, Valid at {args.iou_t:0.2f} IoU: {valid_percentage:0.2f}%")
 
 if __name__ == "__main__":
     main()
