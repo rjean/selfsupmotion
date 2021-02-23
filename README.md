@@ -9,7 +9,29 @@ Self-Supervised Motion Understanding
 
 * Free software: Apache Software License 2.0
 
+## Pre-training a model.
+Assuming you have the prepared HDF5 data in the /home/raphael/datasets/objectron folder, you can start pre-training with the following command:
+``` 
+python selfsupmotion/main.py --data=/home/raphael/datasets/objectron --output=output --config=examples/local/config-pretrain-8gb.yaml
+```
+During pre-training, the accuracy on category prediction is used as a proxy for the model quality.
 
+## Evaluation on pose estimation.
+To evaluate on the zero-shot pose estimation task, you must first generate the embeddings using the main program.
+```
+python selfsupmotion/main.py    --data=/home/raphael/datasets/objectron \
+                                --output=output/pretrain_224 \
+                                --config=examples/local/config-pretrain-8gb.yaml
+                                --embeddings
+                                --embeddings-ckpt=output/pretrain_224/last_model.ckpt
+```
+This will generate embeddings for all images in the training and validation set. Care must be taken to use the same split as in training, or else you will get leaky results.
+
+Once the embeddings are generated, the evaluation script can be launched.
+```
+python selfsupmotion/zero_shot_pose.py output/pretrain_224 --subset_size=5000 --cpu
+```
+3D IoU @ 50% precision will be reported for each individual category in objectron.
 
 ## Instructions to setup the project
 
