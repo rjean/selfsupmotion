@@ -16,6 +16,8 @@ import torch.nn.functional as F
 import torch.nn as nn
 from typing import Optional, Tuple
 
+import selfsupmotion.zero_shot_pose as zsp
+
 logger = logging.getLogger(__name__)
 
 #Credit: https://github.com/PatrickHua/SimSiam
@@ -287,14 +289,15 @@ class SimSiam(pl.LightningModule):
         if batch_idx==0:
             save_mosaic("img_1_val.jpg", img_1)
             save_mosaic("img_2_val.jpg", img_2)
+            if self.cuda_train_features is None: #Transfer to GPU once.
+                self.cuda_train_features = self.train_features.half().cuda()
+
         uid = batch["UID"]
         y = batch["CAT_ID"]
 
         # Image 1 to image 2 loss
         f1, z1, h1 = self.online_network(img_1)
         f2, z2, h2 = self.online_network(img_2)
-        if self.cuda_train_features is None: #Transfer to GPU once.
-            self.cuda_train_features = self.train_features.half().cuda()
 
         loss = self.cosine_similarity(h1, z2) / 2 + self.cosine_similarity(h2, z1) / 2
 
@@ -310,6 +313,8 @@ class SimSiam(pl.LightningModule):
         accuracy = match_count/len(neighbor_targets)
 
         self.valid_features[base:base+len(img_1)]=valid_features
+
+        
 
         # log results
         self.log("val_loss", loss)

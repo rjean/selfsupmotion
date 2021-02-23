@@ -8,6 +8,7 @@ import random
 import math
 import re
 import h5py
+import io
 #import multiprocessing
 from multiprocessing import Pool
 #multiprocessing.set_start_method('spawn')
@@ -79,13 +80,7 @@ def estimate_object_center_in_query_image(query_intrinsics, query_bbox, points_2
     return cx, cy, a, b
 
 
-def get_scale_factor(points_3d_query, points3d_scaled, intrinsics, width=360, height=480):
-    points2d_px_result = geo.project_3d_to_2d(points3d_scaled, intrinsics)
-    points2d_px_query = geo.project_3d_to_2d(points_3d_query, intrinsics)
-    result_bbox = geo.get_bbox(points2d_px_result, width, height)
-    query_bbox = geo.get_bbox(points2d_px_query, width, height)
-    scale = geo.get_bbox_area(query_bbox) / geo.get_bbox_area(result_bbox)
-    return scale
+
 
 def align_box_with_plane(points3d, plane_normal_query, plane_normal_result):
     box_rotation = geo.rotation_matrix_from_vectors(plane_normal_query, plane_normal_result)
@@ -93,14 +88,22 @@ def align_box_with_plane(points3d, plane_normal_query, plane_normal_result):
     points_3d_axis = np.dot(points3d-points3d[0],box_rotation)+points3d[0]
     return points_3d_axis
 
-def get_smooth_scale_factor(points_3d_query, points3d_scaled, intrinsics, alpha):
-    factor = get_scale_factor(points_3d_query, points3d_scaled, intrinsics)    
+def get_scale_factor(query_bbox, points3d_scaled, intrinsics, width=360, height=480):
+    points2d_px_result = geo.project_3d_to_2d(points3d_scaled, intrinsics)
+    #points2d_px_query = geo.project_3d_to_2d(points_3d_query, intrinsics)
+    result_bbox = geo.get_bbox(points2d_px_result, width, height)
+    #query_bbox = geo.get_bbox(points2d_px_query, width, height)
+    scale = geo.get_bbox_area(query_bbox) / geo.get_bbox_area(result_bbox)
+    return scale
+
+def get_smooth_scale_factor(query_bbox, points3d_scaled, intrinsics, alpha):
+    factor = get_scale_factor(query_bbox, points3d_scaled, intrinsics)    
     return (alpha+factor-1)/alpha
 
 def get_bounding_box(idx, match_idx, experiment, adjust_scale=False):
     points_2d_result, points_3d_result = experiment.get_points(match_idx, train=True)
     points_2d_px_result = geo.points_2d_to_points2d_px(points_2d_result, 360, 480)
-    points_2d_query, points_3d_query = experiment.get_points(idx, train=False)
+    points_2d_query, _ = experiment.get_points(idx, train=False)
     points_2d_px_query = geo.points_2d_to_points2d_px(points_2d_query, 360, 480)
     plane_center_query, plane_normal_query= experiment.get_plane(idx, train=False)
     plane_center_result, plane_normal_result = experiment.get_plane(match_idx, train=True)
@@ -116,14 +119,14 @@ def get_bounding_box(idx, match_idx, experiment, adjust_scale=False):
     obj_radius = geo.get_dist_from_plane(plane_normal_result, plane_center_result, points_3d_axis[0])
     points_3d_result_snapped = geo.snap_to_plane(points_3d_axis, plane_normal_query, plane_center_query, center_ray, obj_radius)
     if adjust_scale:
-        scale = get_smooth_scale_factor(points_3d_query, points_3d_result_snapped, query_intrinsics, 2)
+        scale = get_smooth_scale_factor(query_bbox, points_3d_result_snapped, query_intrinsics, 2)
         points3d_scaled = points_3d_result_snapped
         for i in range(0,4):
             #print(scale, obj_radius)
             obj_radius = geo.get_dist_from_plane(plane_normal_query, plane_center_query, points3d_scaled[0])
             points3d_scaled = geo.snap_to_plane(geo.scale_3d_bbox(points3d_scaled, scale),
                                                 plane_normal_query, plane_center_query, center_ray, obj_radius = obj_radius*scale)
-            scale = get_smooth_scale_factor(points_3d_query, points3d_scaled, query_intrinsics, 2)
+            scale = get_smooth_scale_factor(query_bbox, points3d_scaled, query_intrinsics, 2)
             #print(i, get_iou_between_bbox(np.array(points_3d_query), np.array(points3d_scaled)))
         return points3d_scaled
     return points_3d_result_snapped
@@ -189,22 +192,6 @@ def get_objectron_bbox_colors():
 
 
 
-def parse_info_df(info_df, subset="valid"):
-    """Parses an embedding meta-data dataframe. (The output of SimSiam)
-
-    Args:
-        info_df (pd.DataFrame): Pandas Dataframe, as output by the "read experiment" function.
-        subset (str, optional): Which subset to use. Can be "train", "valid" or test. Defaults to "valid".
-    """
-    info_df["category"]=info_df["uid"].str.extract("(.*?)-")
-    info_df["sequence_uid"]=info_df["uid"].str.extract("(batch\-\d+_\d+_\d+)")
-    info_df["frame"]=info_df["uid"].str.extract("-(\d+)$")
-    info_df["video_id"]=info_df["uid"].str.extract("(batch\-\d+_\d+)")
-    info_df["object_id"]=info_df["uid"].str.extract("batch\-\d+_\d+_(\d+)")
-    info_df["batch_number"]=info_df["uid"].str.extract("(batch\-\d+)")
-    info_df["sequence_number"]=info_df["uid"].str.extract("batch\-\d+_(\d+)_\d+")
-    info_df["filepath"]=f"/home/raphael/datasets/objectron/96x96/{subset}/" + info_df["category"] +"/" + info_df["sequence_uid"] +"." + info_df["frame"] + ".jpg"
-    info_df["filepath_full"]="/home/raphael/datasets/objectron/640x480_full/" + info_df["category"] +"/" + info_df["sequence_uid"] +"." + info_df["frame"] + ".jpg"
 
 
 
@@ -539,6 +526,15 @@ def get_iou_mp(idx:int #, symmetric=False, rescale=False,
     return best_iou , idx, match_idx
 
 class ExperimentHandlerFile():
+    def __init__(self, experiment:str=None):
+        self.info_df = None
+        self.train_info_df = None
+        self.hdf5_dataset = None
+        if experiment:
+            self.read_experiment(experiment)
+        self.source_image_width = 1440
+        self.source_image_height = 1920
+
     def read_experiment(self, experiment: str):
         """Read the output of a SimSiam experiment folder. (Embeddings and metadata)
 
@@ -566,6 +562,20 @@ class ExperimentHandlerFile():
             train_embeddings = load_fn(train_old_filename)
         train_info = numpy.load(f"{experiment}/train_info.npy")
         assert train_info.shape[0]==2
+
+            #lines = content
+        self.init_experiment(embeddings, info, train_embeddings, train_info)
+        try:
+            with open(f"{experiment}/train_sequences.txt","r") as f:
+                train_sequences_t = f.read().split("\n")
+                valid_sequences_g = sorted(list((self.info_df["sequence_uid"].unique())))
+                for valid_sequence in valid_sequences_g:
+                    if valid_sequence in train_sequences_t:
+                        raise ValueError(f"The validation sequence {valid_sequence} was part of the training set!")
+        except FileNotFoundError:
+            print(f"Warning, unable to find {experiment}/train_sequences.txt.\n We will not be able to make sure there is no overlap between training and validation!")
+
+    def init_experiment(self, embeddings, info, train_embeddings, train_info):
         info_df = pd.DataFrame(info.T)
         train_info_df = pd.DataFrame(train_info.T)
         info_df_columns = {0:"category_id",1:"uid"}
@@ -576,19 +586,15 @@ class ExperimentHandlerFile():
             self.hdf5_dataset = h5py.File('/home/raphael/datasets/objectron/extract_s5_raw.hdf5','r')
         else:
             self.mode = "raw"
-        parse_info_df(info_df)
-        parse_info_df(train_info_df, subset="train")
+        self.parse_info_df(info_df)
+        self.parse_info_df(train_info_df, subset="train")
         assert train_embeddings.shape[0] == embeddings.shape[1]
         self.embeddings = embeddings
         self.train_embeddings = train_embeddings
         self.info_df = info_df
         self.train_info_df = train_info_df
 
-    def __init__(self, experiment):
-        self.info_df = None
-        self.train_info_df = None
-        self.hdf5_dataset = None
-        self.read_experiment(experiment)
+
 
     def get_points(self, idx: int, train=False):
         if self.mode=="raw":
@@ -600,11 +606,28 @@ class ExperimentHandlerFile():
         else:
             raise ValueError(f"Mode not supported: {self.mode}")
 
-    def _hdf5_parse_uid(self, idx, train=False):
+    def get_image(self,idx, train=False):
+        df = self._get_df(train)
+        if self.mode=="hdf5":
+            category, sequence, image_id  = self._hdf5_parse_uid(idx,train)
+            image_idx = list(self.hdf5_dataset[category][sequence]["IMAGE_ID"]).index(image_id)
+            jpeg_data = self.hdf5_dataset[category][sequence]["IMAGE"][image_idx]
+            #image = Image.frombytes('RGBA', (128,128), jpeg_data, 'raw')
+            image = Image.open(io.BytesIO(jpeg_data))
+            #img= cv2.imdecode(self.hdf5_dataset[category][sequence]["IMAGE"][image_idx],cv2.IMREAD_ANYCOLOR)
+            return image
+        else:
+            raise ValueError("To be implemented!")
+
+    def _get_df(self, train):
         if train:
             df = self.train_info_df
         else:
             df = self.info_df
+        return df
+
+    def _hdf5_parse_uid(self, idx, train=False):
+        df = self._get_df(train)
         uid = df.iloc[idx]["uid"]
         m = re.match("hdf5_(\w+)/(\d+)_(\d+)", uid)
         category, sequence, image_id = m[1],m[2], int(m[3])
@@ -729,12 +752,12 @@ class ExperimentHandlerFile():
     def _get_subset(info_df, embeddings, ratio):
         if ratio==1:
             return info_df, embeddings
-        info_df["video_uid"]=info_df["category"]+"_"+info_df["video_id"]
-        video_uids = list(info_df["video_uid"].unique())
+        #info_df["video_uid"]=info_df["category"]+"_"+info_df["video_id"]
+        video_uids = list(info_df["sequence_uid"].unique())
         videos_uids_subset = random.sample(video_uids, int(len(video_uids)*ratio))
         print(f"Using a subset of {len(videos_uids_subset)} out of {len(video_uids)} total sequences for evaluation.")
     
-        info_df_subset =info_df[info_df["video_uid"].isin(videos_uids_subset)]
+        info_df_subset =info_df[info_df["sequence_uid"].isin(videos_uids_subset)]
         embeddings_subset=embeddings[:,list(info_df_subset.index)]
         info_df_subset = info_df_subset.reset_index()
         return info_df_subset, embeddings_subset
@@ -745,10 +768,7 @@ class ExperimentHandlerFile():
         self.train_embeddings = train_embeddings
 
     def get_category(self, idx, train=False):
-        if train:
-            df = self.train_info_df
-        else:
-            df = self.info_df
+        df = self._get_df(train)
         if self.mode=="raw":
             return df.iloc[idx]["category"]
         elif self.mode=="hdf5":
@@ -756,6 +776,30 @@ class ExperimentHandlerFile():
             return category
         else:
             raise ValueError(f"Mode not supported: {self.mode}") 
+
+    def get_sequence_uid(self, idx, train=False):
+        df = self._get_df(train)
+        return df.iloc[idx]["sequence_uid"]
+            
+
+    def parse_info_df(self, info_df, subset="valid"):
+        """Parses an embedding meta-data dataframe. (The output of SimSiam)
+
+        Args:
+            info_df (pd.DataFrame): Pandas Dataframe, as output by the "read experiment" function.
+            subset (str, optional): Which subset to use. Can be "train", "valid" or test. Defaults to "valid".
+        """
+        info_df["category"]=info_df["uid"].str.extract("(.*?)-")
+        info_df["sequence_uid"]=info_df["uid"].str.extract("(batch\-\d+_\d+_\d+)")
+        info_df["frame"]=info_df["uid"].str.extract("-(\d+)$")
+        info_df["video_id"]=info_df["uid"].str.extract("(batch\-\d+_\d+)")
+        info_df["object_id"]=info_df["uid"].str.extract("batch\-\d+_\d+_(\d+)")
+        info_df["batch_number"]=info_df["uid"].str.extract("(batch\-\d+)")
+        info_df["sequence_number"]=info_df["uid"].str.extract("batch\-\d+_(\d+)_\d+")
+        info_df["filepath"]=f"/home/raphael/datasets/objectron/96x96/{subset}/" + info_df["category"] +"/" + info_df["sequence_uid"] +"." + info_df["frame"] + ".jpg"
+        info_df["filepath_full"]="/home/raphael/datasets/objectron/640x480_full/" + info_df["category"] +"/" + info_df["sequence_uid"] +"." + info_df["frame"] + ".jpg"
+        if self.mode=="hdf5":
+            info_df["sequence_uid"] = info_df["uid"].str.extract("hdf5_(\w+/\d+)_")
 
 def main():
     global args, experiment, ground_plane, symmetric, rescale, all_match_idxs, use_cupy
@@ -786,6 +830,11 @@ def main():
 
     experiment = ExperimentHandlerFile(args.experiment)
 
+    if args.trainset_ratio > 0 and args.trainset_ratio <= 1:
+        experiment.set_trainsubset(args.trainset_ratio)
+    else:
+        raise ValueError("Training set ratio must be between 0 and 1!")
+
     all_match_idxs = find_all_match_idx(experiment.embeddings, experiment.train_embeddings, 0)
     get_iou_mp(1)
     if args.subset_size < len(experiment.info_df):
@@ -794,10 +843,7 @@ def main():
         print(f"Evaluating on all samples size subset size ({args.subset_size}) is larger that test set size ({len(experiment.info_df)}).")
         subset = list(range(0,len(experiment.info_df)))
         random.shuffle(subset)
-    if args.trainset_ratio > 0 and args.trainset_ratio <= 1:
-        experiment.set_trainsubset(args.trainset_ratio)
-    else:
-        raise ValueError("Training set ratio must be between 0 and 1!")
+
     ious = {}
     results = []
     ious_aligned = []

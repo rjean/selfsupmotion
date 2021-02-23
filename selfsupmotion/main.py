@@ -189,9 +189,9 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger):
     if "early_stop_metric" not in hyper_params:
         hyper_params["early_stop_metric"]="val_loss"
 
-    save_list_to_file(f"{output_dir}/train_sequences.txt", dm.train_dataset.seq_subset)
-    save_list_to_file(f"{output_dir}/val_sequences.txt", dm.val_dataset.seq_subset)
 
+
+    
     if args.embeddings:
         if args.embeddings_ckpt is None:
             raise ValueError("Please manually provide the checkpoints using the --embeddings-ckpt argument")
@@ -200,6 +200,8 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger):
         generate_embeddings(args, model, datamodule=dm,train=True, image_size=hyper_params["image_size"])
         generate_embeddings(args, model, datamodule=dm,train=False, image_size=hyper_params["image_size"])
     else:
+        save_list_to_file(f"{output_dir}/train_sequences.txt", dm.train_dataset.seq_subset)
+        save_list_to_file(f"{output_dir}/val_sequences.txt", dm.val_dataset.seq_subset)
         model = load_model(hyper_params)
         train(model=model, optimizer=None, loss_fun=None, datamodule=dm,
               patience=hyper_params['patience'], output=output_dir,
