@@ -80,13 +80,7 @@ def estimate_object_center_in_query_image(query_intrinsics, query_bbox, points_2
     return cx, cy, a, b
 
 
-def get_scale_factor(points_3d_query, points3d_scaled, intrinsics, width=360, height=480):
-    points2d_px_result = geo.project_3d_to_2d(points3d_scaled, intrinsics)
-    points2d_px_query = geo.project_3d_to_2d(points_3d_query, intrinsics)
-    result_bbox = geo.get_bbox(points2d_px_result, width, height)
-    query_bbox = geo.get_bbox(points2d_px_query, width, height)
-    scale = geo.get_bbox_area(query_bbox) / geo.get_bbox_area(result_bbox)
-    return scale
+
 
 def align_box_with_plane(points3d, plane_normal_query, plane_normal_result):
     box_rotation = geo.rotation_matrix_from_vectors(plane_normal_query, plane_normal_result)
@@ -94,14 +88,22 @@ def align_box_with_plane(points3d, plane_normal_query, plane_normal_result):
     points_3d_axis = np.dot(points3d-points3d[0],box_rotation)+points3d[0]
     return points_3d_axis
 
-def get_smooth_scale_factor(points_3d_query, points3d_scaled, intrinsics, alpha):
-    factor = get_scale_factor(points_3d_query, points3d_scaled, intrinsics)    
+def get_scale_factor(query_bbox, points3d_scaled, intrinsics, width=360, height=480):
+    points2d_px_result = geo.project_3d_to_2d(points3d_scaled, intrinsics)
+    #points2d_px_query = geo.project_3d_to_2d(points_3d_query, intrinsics)
+    result_bbox = geo.get_bbox(points2d_px_result, width, height)
+    #query_bbox = geo.get_bbox(points2d_px_query, width, height)
+    scale = geo.get_bbox_area(query_bbox) / geo.get_bbox_area(result_bbox)
+    return scale
+
+def get_smooth_scale_factor(query_bbox, points3d_scaled, intrinsics, alpha):
+    factor = get_scale_factor(query_bbox, points3d_scaled, intrinsics)    
     return (alpha+factor-1)/alpha
 
 def get_bounding_box(idx, match_idx, experiment, adjust_scale=False):
     points_2d_result, points_3d_result = experiment.get_points(match_idx, train=True)
     points_2d_px_result = geo.points_2d_to_points2d_px(points_2d_result, 360, 480)
-    points_2d_query, points_3d_query = experiment.get_points(idx, train=False)
+    points_2d_query, _ = experiment.get_points(idx, train=False)
     points_2d_px_query = geo.points_2d_to_points2d_px(points_2d_query, 360, 480)
     plane_center_query, plane_normal_query= experiment.get_plane(idx, train=False)
     plane_center_result, plane_normal_result = experiment.get_plane(match_idx, train=True)
@@ -117,14 +119,14 @@ def get_bounding_box(idx, match_idx, experiment, adjust_scale=False):
     obj_radius = geo.get_dist_from_plane(plane_normal_result, plane_center_result, points_3d_axis[0])
     points_3d_result_snapped = geo.snap_to_plane(points_3d_axis, plane_normal_query, plane_center_query, center_ray, obj_radius)
     if adjust_scale:
-        scale = get_smooth_scale_factor(points_3d_query, points_3d_result_snapped, query_intrinsics, 2)
+        scale = get_smooth_scale_factor(query_bbox, points_3d_result_snapped, query_intrinsics, 2)
         points3d_scaled = points_3d_result_snapped
         for i in range(0,4):
             #print(scale, obj_radius)
             obj_radius = geo.get_dist_from_plane(plane_normal_query, plane_center_query, points3d_scaled[0])
             points3d_scaled = geo.snap_to_plane(geo.scale_3d_bbox(points3d_scaled, scale),
                                                 plane_normal_query, plane_center_query, center_ray, obj_radius = obj_radius*scale)
-            scale = get_smooth_scale_factor(points_3d_query, points3d_scaled, query_intrinsics, 2)
+            scale = get_smooth_scale_factor(query_bbox, points3d_scaled, query_intrinsics, 2)
             #print(i, get_iou_between_bbox(np.array(points_3d_query), np.array(points3d_scaled)))
         return points3d_scaled
     return points_3d_result_snapped
@@ -560,7 +562,18 @@ class ExperimentHandlerFile():
             train_embeddings = load_fn(train_old_filename)
         train_info = numpy.load(f"{experiment}/train_info.npy")
         assert train_info.shape[0]==2
+
+            #lines = content
         self.init_experiment(embeddings, info, train_embeddings, train_info)
+        try:
+            with open(f"{experiment}/train_sequences.txt","r") as f:
+                train_sequences_t = f.read().split("\n")
+                valid_sequences_g = sorted(list((self.info_df["sequence_uid"].unique())))
+                for valid_sequence in valid_sequences_g:
+                    if valid_sequence in train_sequences_t:
+                        raise ValueError(f"The validation sequence {valid_sequence} was part of the training set!")
+        except FileNotFoundError:
+            print(f"Warning, unable to find {experiment}/train_sequences.txt.\n We will not be able to make sure there is no overlap between training and validation!")
 
     def init_experiment(self, embeddings, info, train_embeddings, train_info):
         info_df = pd.DataFrame(info.T)
@@ -739,12 +752,12 @@ class ExperimentHandlerFile():
     def _get_subset(info_df, embeddings, ratio):
         if ratio==1:
             return info_df, embeddings
-        info_df["video_uid"]=info_df["category"]+"_"+info_df["video_id"]
-        video_uids = list(info_df["video_uid"].unique())
+        #info_df["video_uid"]=info_df["category"]+"_"+info_df["video_id"]
+        video_uids = list(info_df["sequence_uid"].unique())
         videos_uids_subset = random.sample(video_uids, int(len(video_uids)*ratio))
         print(f"Using a subset of {len(videos_uids_subset)} out of {len(video_uids)} total sequences for evaluation.")
     
-        info_df_subset =info_df[info_df["video_uid"].isin(videos_uids_subset)]
+        info_df_subset =info_df[info_df["sequence_uid"].isin(videos_uids_subset)]
         embeddings_subset=embeddings[:,list(info_df_subset.index)]
         info_df_subset = info_df_subset.reset_index()
         return info_df_subset, embeddings_subset
@@ -817,6 +830,11 @@ def main():
 
     experiment = ExperimentHandlerFile(args.experiment)
 
+    if args.trainset_ratio > 0 and args.trainset_ratio <= 1:
+        experiment.set_trainsubset(args.trainset_ratio)
+    else:
+        raise ValueError("Training set ratio must be between 0 and 1!")
+
     all_match_idxs = find_all_match_idx(experiment.embeddings, experiment.train_embeddings, 0)
     get_iou_mp(1)
     if args.subset_size < len(experiment.info_df):
@@ -825,10 +843,7 @@ def main():
         print(f"Evaluating on all samples size subset size ({args.subset_size}) is larger that test set size ({len(experiment.info_df)}).")
         subset = list(range(0,len(experiment.info_df)))
         random.shuffle(subset)
-    if args.trainset_ratio > 0 and args.trainset_ratio <= 1:
-        experiment.set_trainsubset(args.trainset_ratio)
-    else:
-        raise ValueError("Training set ratio must be between 0 and 1!")
+
     ious = {}
     results = []
     ious_aligned = []
