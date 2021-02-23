@@ -6,9 +6,11 @@ import numpy as np
 import pytorch_lightning as pl
 import torch
 from pytorch_lightning.utilities import AMPType
+from torch.nn.modules.linear import Identity
 from torch.optim.optimizer import Optimizer
 
 from pl_bolts.models.self_supervised.resnets import resnet18, resnet50
+from torchvision.models.shufflenetv2 import shufflenet_v2_x1_0
 #from pl_bolts.models.self_supervised.simsiam.models import SiameseArm
 from pl_bolts.optimizers.lars_scheduling import LARSWrapper
 
@@ -121,7 +123,7 @@ class SiameseArm(nn.Module):
             raise ValueError("Please provide an encoder.")
         # Encoder
         self.encoder = encoder
-        input_dim = self.encoder.fc.in_features
+        #input_dim = self.encoder.fc.in_features
         # Projector
         if hua_mlp: #Using Patrick Hua interpretation of SimSiam.
             #Will use an additional hidden layer. Linear layer will have bias.
@@ -134,7 +136,10 @@ class SiameseArm(nn.Module):
         
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        y = self.encoder(x)[0]
+        if type(self.encoder)==torchvision.models.shufflenetv2.ShuffleNetV2:
+            y = self.encoder(x)
+        else:
+            y = self.encoder(x)[0]
         z = self.projector(y)
         h = self.predictor(z)
         return y, z, h
@@ -216,19 +221,30 @@ class SimSiam(pl.LightningModule):
 
 
     def init_model(self):
-        assert self.backbone in ["resnet18", "resnet50"]
+        assert self.backbone in ["resnet18", "resnet50", "shufflenet_v2_x1_0"]
         if self.backbone == "resnet18":
             backbone = resnet18
-        else:
-            backbone = resnet50
+            backbone_network = backbone(first_conv=self.first_conv, maxpool1=self.maxpool1, return_all_feature_maps=False)
+            self.feature_dim = backbone_network.fc.in_features
 
-        backbone_network = backbone(first_conv=self.first_conv, maxpool1=self.maxpool1, return_all_feature_maps=False)
+        elif self.backbone == "resnet50":
+            backbone = resnet50
+            backbone_network = backbone(first_conv=self.first_conv, maxpool1=self.maxpool1, return_all_feature_maps=False)
+            self.feature_dim = backbone_network.fc.in_features
+        elif self.backbone == "shufflenet_v2_x1_0":
+            backbone = shufflenet_v2_x1_0
+            backbone_network = backbone()
+            self.feature_dim = backbone_network.fc.in_features
+            backbone_network.fc = Identity()
+        else:
+            raise ValueError(f"Unsupported backbone: {self.backbone}")
+        
         self.online_network = SiameseArm(
-            backbone_network, input_dim=self.hidden_mlp, hidden_size=self.hidden_mlp, output_dim=self.feat_dim
+            backbone_network, input_dim=self.feature_dim, hidden_size=self.hidden_mlp, output_dim=self.feat_dim
         )
         #max_batch = math.ceil(self.num_samples/self.batch_size)
         encoder, projector = self.online_network.encoder, self.online_network.projector
-        self.feature_dim = self.online_network.encoder.fc.in_features
+        
         self.train_features = torch.zeros((self.num_samples, self.feature_dim))
         self.train_meta = []
         self.train_targets = -torch.ones((self.num_samples))
