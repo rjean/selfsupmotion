@@ -3,11 +3,9 @@ import glob
 import logging
 import os
 
-import mlflow
 import torch
 import pl_bolts
 import pytorch_lightning as pl
-import yaml
 from orion.client import report_results
 
 logger = logging.getLogger(__name__)
@@ -17,42 +15,12 @@ LAST_MODEL_NAME = 'last_model'
 STAT_FILE_NAME = 'stats.yaml'
 
 
-def write_stats(output, best_eval_score, epoch, remaining_patience):
-    """Write statistics of the best model at the end of every epoch.
-
-    Args:
-        output (str): Output directory
-        best_eval_score (float): best score obtained on evaluation set.
-        epoch (int): Which epoch training is at.
-        remaining_patience (int): How many more epochs before training stops.
-    """
-    mlflow_run = mlflow.active_run()
-    mlflow_run_id = mlflow_run.info.run_id if mlflow_run is not None else 'NO_MLFLOW'
-    to_store = {'best_dev_metric': best_eval_score, 'epoch': epoch,
-                'remaining_patience': remaining_patience,
-                'mlflow_run_id': mlflow_run_id}
-    with open(os.path.join(output, STAT_FILE_NAME), 'w') as stream:
-        yaml.dump(to_store, stream)
-
-
-def load_stats(output):
-    """Load the latest statistics.
-
-    Args:
-        output (str): Output directory
-    """
-    with open(os.path.join(output, STAT_FILE_NAME), 'r') as stream:
-        stats = yaml.load(stream, Loader=yaml.FullLoader)
-    return stats['best_dev_metric'], stats['epoch'], stats['remaining_patience'], \
-        stats['mlflow_run_id']
-
-
 def train(**kwargs):  # pragma: no cover
     """Training loop wrapper. Used to catch exception if Orion is being used."""
     best_dev_metric = train_impl(**kwargs)
     try:
+        # TODO @@@@@@@@@@@@@@@@@@@@@@ FIXME
         pass
-        best_dev_metric = train_impl(**kwargs)
     except RuntimeError as err:
         if orion.client.IS_ORION_ON and 'CUDA out of memory' in str(err):
             logger.error(err)
@@ -69,36 +37,6 @@ def train(**kwargs):  # pragma: no cover
         value=-float(best_dev_metric))])
 
 
-def reload_model(output, model_name, model, optimizer,
-                 start_from_scratch=False):  # pragma: no cover
-    """Reload a model.
-
-    Can be useful for model checkpointing, hyper-parameter optimization, etc.
-
-    Args:
-        output (str): Output directory.
-        model_name (str): Name of the saved model.
-        model (obj): A model object.
-        optimizer (obj): Optimizer used during training.
-        start_from_scratch (bool): starts training from scratch even if a saved moel is present.
-    """
-    saved_model = os.path.join(output, model_name)
-    if start_from_scratch and os.path.exists(saved_model):
-        logger.info('saved model file "{}" already exists - but NOT loading it '
-                    '(cause --start_from_scratch)'.format(output))
-        return
-    if os.path.exists(saved_model):
-        logger.info('saved model file "{}" already exists - loading it'.format(output))
-
-        model.load_state_dict(torch.load(saved_model))
-    if os.path.exists(output):
-        logger.info('saved model file not found')
-        return
-
-    logger.info('output folder not found')
-    os.makedirs(output)
-
-
 def train_impl(
         model,
         optimizer,
@@ -110,6 +48,7 @@ def train_impl(
         use_progress_bar,
         start_from_scratch,
         mlf_logger,
+        tbx_logger,
         precision,
         early_stop_metric,
         accumulate_grad_batches
@@ -128,6 +67,7 @@ def train_impl(
         use_progress_bar (bool): Use tqdm progress bar (can be disabled when logging).
         start_from_scratch (bool): Start training from scratch (ignore checkpoints)
         mlf_logger (obj): MLFlow logger callback.
+        tbx_logger (obj): TensorBoard logger callback.
     """
     best_checkpoint_callback = pl.callbacks.ModelCheckpoint(
         filepath=os.path.join(output, BEST_MODEL_NAME),
@@ -156,31 +96,30 @@ def train_impl(
         logger.info('starting training from scratch')
         resume_from_checkpoint = None
 
-    #if 
-    if early_stop_metric!="none":
+    if early_stop_metric != "none":
         early_stopping = pl.callbacks.EarlyStopping(early_stop_metric, mode="auto", patience=patience, verbose=use_progress_bar)
-        callbacks=[early_stopping]
+        callbacks = [early_stopping]
     else:
-        callbacks=[]
+        callbacks = []
 
     printer_callback = pl_bolts.callbacks.PrintTableMetricsCallback()
-    callbacks = callbacks + [
-            best_checkpoint_callback,
-            last_checkpoint_callback,
-            printer_callback,
-        ]
+    callbacks = callbacks.extend([
+        best_checkpoint_callback,
+        last_checkpoint_callback,
+        printer_callback,
+    ])
     trainer = pl.Trainer(
         # @@@@@@@@@@@ TODO check if we can add an online evaluator w/ callback
         callbacks=callbacks,
         checkpoint_callback=True,
-        logger=mlf_logger,
+        logger=[mlf_logger, tbx_logger],
         max_epochs=max_epoch,
         resume_from_checkpoint=resume_from_checkpoint,
         gpus=torch.cuda.device_count(),
         auto_select_gpus=True,
         precision=precision,
         amp_level="O1",
-        accelerator=None,  # @@@@@@@@@ TODO CHECK ME OUT w/ precision arg too
+        accelerator=None,
         accumulate_grad_batches=accumulate_grad_batches
     )
 

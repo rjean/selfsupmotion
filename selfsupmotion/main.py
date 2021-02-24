@@ -5,12 +5,11 @@ import logging
 import os
 import shutil
 import sys
-from pytorch_lightning.cluster_environments import torchelastic_environment
 import yaml
 
 from yaml import load
 import pytorch_lightning as pl
-from pytorch_lightning.loggers import MLFlowLogger
+from pytorch_lightning.loggers import MLFlowLogger, TensorBoardLogger
 
 from selfsupmotion.train import train
 from selfsupmotion.utils.hp_utils import check_and_log_hp
@@ -61,7 +60,9 @@ def main():
     parser.add_argument('--embeddings', action='store_true',help="Skip training and generate embeddings for evaluation.")
     parser.add_argument('--embeddings-ckpt', type=str, default=None, help="Checkpoint to load when generating embeddings.")
     parser.add_argument("--dryrun", action="store_true", help="Dry-run by training on the validtion set. Use only to test loop code.")
-    
+
+    mlflow_save_dir = "./mlruns"  # make into arg?
+    tbx_save_dir = "./tensorboard"  # make into arg?
 
     parser = pl.Trainer.add_argparse_args(parser)
 
@@ -103,8 +104,11 @@ def main():
     output_dir = os.path.join(output_dir, exp_name)
     os.makedirs(output_dir, exist_ok=True)
     shutil.copyfile(args.config, os.path.join(output_dir, "config.backup"))
-    mlf_logger = MLFlowLogger(experiment_name=exp_name)
-    run(args, data_dir, output_dir, hyper_params, mlf_logger)
+    os.makedirs(mlflow_save_dir, exist_ok=True)
+    mlf_logger = MLFlowLogger(experiment_name=exp_name, save_dir=mlflow_save_dir, )
+    os.makedirs(tbx_save_dir, exist_ok=True)
+    tbx_logger = TensorBoardLogger(save_dir=tbx_save_dir, name=exp_name)
+    run(args, data_dir, output_dir, hyper_params, mlf_logger, tbx_logger)
     if args.tmp_folder is not None:
         rsync_folder(output_dir + os.path.sep, args.output)
 
@@ -113,7 +117,7 @@ def save_list_to_file(filename, string_list):
         for string in string_list:
             f.write(f"{string}\n")
 
-def run(args, data_dir, output_dir, hyper_params, mlf_logger):
+def run(args, data_dir, output_dir, hyper_params, mlf_logger, tbx_logger):
     """Setup and run the dataloaders, training loops, etc.
 
     Args:
@@ -122,6 +126,7 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger):
         output_dir (str): path to output folder
         hyper_params (dict): hyper parameters from the config file
         mlf_logger (obj): MLFlow logger callback.
+        tbx_logger (obj): TensorBoard logger callback.
     """
     # __TODO__ change the hparam that are used from the training algorithm
     # (and NOT the model - these will be specified in the model itself)
@@ -145,7 +150,7 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger):
             hdf5_path=data_dir,
             tuple_length=hyper_params.get("tuple_length", 2),
             frame_offset=hyper_params.get("frame_offset", 1),
-            tuple_offset=hyper_params.get("tuple_offset", 2),
+            tuple_offset=hyper_params.get("tuple_offset", 1),
             input_height=hyper_params.get("input_height", 224),
             gaussian_blur=hyper_params.get("gaussian_blur", True),
             jitter_strength=hyper_params.get("jitter_strength", 1.0),
@@ -203,13 +208,22 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger):
         save_list_to_file(f"{output_dir}/train_sequences.txt", dm.train_dataset.seq_subset)
         save_list_to_file(f"{output_dir}/val_sequences.txt", dm.val_dataset.seq_subset)
         model = load_model(hyper_params)
-        train(model=model, optimizer=None, loss_fun=None, datamodule=dm,
-              patience=hyper_params['patience'], output=output_dir,
-              max_epoch=hyper_params['max_epoch'], use_progress_bar=not args.disable_progressbar,
-              start_from_scratch=args.start_from_scratch, mlf_logger=mlf_logger, precision=hyper_params["precision"],
-              early_stop_metric = hyper_params["early_stop_metric"],
-              accumulate_grad_batches = hyper_params.get("accumulate_grad_batches",1),
-              )
+        train(
+            model=model,
+            optimizer=None,
+            loss_fun=None,
+            datamodule=dm,
+            patience=hyper_params['patience'],
+            output=output_dir,
+            max_epoch=hyper_params['max_epoch'],
+            use_progress_bar=not args.disable_progressbar,
+            start_from_scratch=args.start_from_scratch,
+            mlf_logger=mlf_logger,
+            tbx_logger=tbx_logger,
+            precision=hyper_params["precision"],
+            early_stop_metric=hyper_params["early_stop_metric"],
+            accumulate_grad_batches=hyper_params.get("accumulate_grad_batches", 1),
+        )
 
 import torch
 from tqdm import tqdm

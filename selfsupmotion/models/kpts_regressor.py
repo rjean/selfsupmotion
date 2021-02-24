@@ -5,6 +5,7 @@ import typing
 import numpy as np
 import pytorch_lightning as pl
 import torch
+import torch.nn.functional
 from pytorch_lightning.utilities import AMPType
 from torch.optim.optimizer import Optimizer
 
@@ -29,24 +30,21 @@ class KeypointsRegressor(pl.LightningModule):
         self.num_samples = hyper_params.get("num_samples")
         self.batch_size = hyper_params.get("batch_size")
 
-        #self.hidden_mlp = hyper_params.get("hidden_mlp", 2048)
-        #self.feat_dim = hyper_params.get("feat_dim", 128)
         self.first_conv = hyper_params.get("first_conv", True)
         self.maxpool1 = hyper_params.get("maxpool1", True)
-        self.dropout = hyper_params.get("dropout", 0.2)
+        self.dropout = hyper_params.get("dropout", None)
         self.input_height = hyper_params.get("input_height", 224)
 
         self.optim = hyper_params.get("optimizer", "adam")
-        self.lars_wrapper = hyper_params.get("lars_wrapper", True)
+        self.lars_wrapper = hyper_params.get("lars_wrapper", False)
         self.exclude_bn_bias = hyper_params.get("exclude_bn_bias", False)
         self.weight_decay = hyper_params.get("weight_decay", 1e-6)
-        #self.temperature = hyper_params.get("temperature", 0.1)
 
         self.start_lr = hyper_params.get("start_lr", 0.)
         self.final_lr = hyper_params.get("final_lr", 1e-6)
         self.learning_rate = hyper_params.get("learning_rate", 1e-3)
-        self.warmup_epochs = hyper_params.get("warmup_epochs", 10)
-        self.max_epochs = hyper_params.get("max_epochs", 250)
+        self.warmup_epochs = hyper_params.get("warmup_epochs", 5)
+        self.max_epochs = hyper_params.get("max_epochs", 50)
 
         self.init_model()
         self.loss_fn = torch.nn.MSELoss()
@@ -82,47 +80,68 @@ class KeypointsRegressor(pl.LightningModule):
             maxpool1=self.maxpool1,
             return_all_feature_maps=False,
         )
-        if self.dropout is not None:  # @@@@ experiment with this
+        if self.dropout is not None and self.dropout > 0:  # @@@@ experiment with this
             self.decoder = torch.nn.Sequential(
                 torch.nn.Dropout(p=self.dropout),
-                torch.nn.Linear(2048, 18, bias=True),
+                torch.nn.Linear(2048, 18),
             )
         else:
-            self.decoder = torch.nn.Sequential(
-                torch.nn.Linear(2048, 1024, bias=False),
-                torch.nn.BatchNorm1d(1024),
-                torch.nn.ReLU(inplace=True),
-                torch.nn.Linear(1024, 18, bias=True),
-            )
+            self.decoder = torch.nn.Linear(2048, 18)
 
     def forward(self, x):
-        return self.decoder(x)
+        return self.decoder(self.encoder(x)[0])
 
     def training_step(self, batch, batch_idx):
+        # @@@@@@@@@@ ADD MAX LOSS SAT, should not be > 2 per kpt?
         loss = None
+        preds_stack, targets_stack = [], []
+        # the loop below iterates for all frames in the frame tuple, but it should really just do one iter
         for img, pts in zip(batch["OBJ_CROPS"], batch["POINTS"]):
             embd = self.encoder(img)[0]
             preds = self.decoder(embd).view(pts.shape)
+            preds_stack.append(preds.detach())
+            targets_stack.append(pts)
+            # todo: try w/ -height/2 offset to center around 0?
             curr_loss = self.loss_fn(preds, pts / self.input_height)
             if loss is None:
                 loss = curr_loss
             else:
                 loss += curr_loss
-        self.log("train_loss", loss)
-        return loss
+        preds_stack = torch.cat(preds_stack)
+        targets_stack = torch.cat(targets_stack)
+        self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=False, logger=True)
+        self.log("lr", self.lr_schedule[self.trainer.global_step],
+                 on_step=True, on_epoch=False, prog_bar=False, logger=True)
+        train_mae_2d = torch.nn.functional.l1_loss(preds_stack * self.input_height, targets_stack)
+        self.log("train_mae_2d", train_mae_2d, on_step=True, on_epoch=True, prog_bar=False, logger=True)
+        return {
+            "loss": loss,
+            "train_mae_2d": train_mae_2d,
+        }
 
     def validation_step(self, batch, batch_idx):
         loss = None
+        preds_stack, targets_stack = [], []
+        # the loop below iterates for all frames in the frame tuple, but it should really just do one iter
         for img, pts in zip(batch["OBJ_CROPS"], batch["POINTS"]):
             embd = self.encoder(img)[0]
             preds = self.decoder(embd).view(pts.shape)
+            preds_stack.append(preds.detach())
+            targets_stack.append(pts)
             curr_loss = self.loss_fn(preds, pts / self.input_height)
             if loss is None:
                 loss = curr_loss
             else:
                 loss += curr_loss
-        self.log("val_loss", loss)
-        return loss
+        preds_stack = torch.cat(preds_stack)
+        targets_stack = torch.cat(targets_stack)
+        self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=False, logger=True)
+        val_mae_2d = torch.nn.functional.l1_loss(preds_stack * self.input_height, targets_stack)
+        self.log("val_mae_2d", val_mae_2d, on_step=False, on_epoch=True, prog_bar=False, logger=True)
+        return {
+            "val_loss": loss,
+            "val_mae_2d": val_mae_2d,
+        }
 
     def exclude_from_wt_decay(self, named_params, weight_decay, skip_list=['bias', 'bn']):
         params = []
