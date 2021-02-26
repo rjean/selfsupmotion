@@ -26,6 +26,11 @@ import selfsupmotion.data.objectron.data_transforms
 import selfsupmotion.data.objectron.sequence_parser
 import selfsupmotion.data.utils
 
+duplicates = [  ("book/01259","book/01178"),
+                ("book/00278","book/00529"),
+                ("laptop/00625","laptop/00930"),
+                ("chair/00934", "chair/01092")
+                ]
 
 class ObjectronHDF5SequenceParser(torch.utils.data.Dataset):
     """Objectron HDF5 dataset parser.
@@ -234,6 +239,7 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
             val_augmentation: bool=True,
             crop_strategy: str="centroid",
             sync_hflip=False,
+            coords=None,
             *args: typing.Any,
             **kwargs: typing.Any,
     ):
@@ -259,6 +265,7 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
         self.val_augmentation= val_augmentation
         self.crop_strategy=crop_strategy
         self.sync_hflip=sync_hflip
+        self.coords = coords
         # create temp dataset to get total sequence/sample count
         dataset = ObjectronHDF5FrameTupleParser(
             hdf5_path=self.hdf5_path,
@@ -346,7 +353,8 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
                 use_hflip_augment=False,  # @@@@@ bad for keypoints?
                 shared_transform=self.shared_transform,
                 crop_strategy=self.crop_strategy,
-                sync_hflip=self.sync_hflip
+                sync_hflip=self.sync_hflip,
+                coords=self.coords
             )
         else:
             return selfsupmotion.data.objectron.data_transforms.SimSiamFramePairTrainDataTransform(
@@ -358,7 +366,8 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
                 crop_ratio=self.crop_ratio,
                 shared_transform=self.shared_transform,
                 crop_strategy=self.crop_strategy,
-                sync_hflip=self.sync_hflip
+                sync_hflip=self.sync_hflip,
+                coords=self.coords
             )
 
     def val_transform(self):
@@ -371,6 +380,7 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
                 crop_scale=(0.8, 1.0),
                 crop_ratio=(0.75, 1.3333),
                 use_hflip_augment=False,  # @@@@@ bad for keypoints?
+                coords=self.coords
             )
         else:
             return selfsupmotion.data.objectron.data_transforms.SimSiamFramePairEvalDataTransform(
@@ -378,7 +388,8 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
                 gaussian_blur=self.gaussian_blur,
                 jitter_strength=self.jitter_strength,
                 augmentation=self.val_augmentation,
-                crop_strategy=self.crop_strategy
+                crop_strategy=self.crop_strategy,
+                coords=self.coords
             )
 
 
