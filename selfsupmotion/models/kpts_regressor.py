@@ -12,6 +12,7 @@ from pl_bolts.models.self_supervised.resnets import resnet18, resnet50
 from pl_bolts.optimizers.lars_scheduling import LARSWrapper
 
 logger = logging.getLogger(__name__)
+from selfsupmotion.utils.logging_utils import save_mosaic
 
 
 class KeypointsRegressor(pl.LightningModule):
@@ -99,8 +100,12 @@ class KeypointsRegressor(pl.LightningModule):
         return self.decoder(x)
 
     def training_step(self, batch, batch_idx):
+        if batch_idx==0:
+            save_mosaic("train_kpts.png",batch["OBJ_CROPS"][0])
+
         loss = None
         for img, pts in zip(batch["OBJ_CROPS"], batch["POINTS"]):
+
             embd = self.encoder(img)[0]
             preds = self.decoder(embd).view(pts.shape)
             curr_loss = self.loss_fn(preds, pts / self.input_height)
@@ -112,6 +117,8 @@ class KeypointsRegressor(pl.LightningModule):
         return loss
 
     def validation_step(self, batch, batch_idx):
+        if batch_idx==0:
+            save_mosaic("val_kpts.png",batch["OBJ_CROPS"][0])
         loss = None
         for img, pts in zip(batch["OBJ_CROPS"], batch["POINTS"]):
             embd = self.encoder(img)[0]
