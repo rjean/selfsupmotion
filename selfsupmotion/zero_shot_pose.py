@@ -549,6 +549,7 @@ class ExperimentHandlerFile():
         if not use_cupy:
             load_fn = np.load
         
+        print(f"Reading experiment results from: {experiment}")
         embeddings = load_fn(f"{experiment}/embeddings.npy")
         if embeddings.shape [1]>embeddings.shape [0]:
             embeddings=embeddings.T
