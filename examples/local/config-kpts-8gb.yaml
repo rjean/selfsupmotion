@@ -15,7 +15,7 @@ frame_offset: 1
 tuple_offset: 1
 patience: 5
 max_epoch: 100
-exp_name: temp_kpts_regressor
+exp_name: kpts_regressor
 gpus: 1
 num_workers: 12
 seed: None
