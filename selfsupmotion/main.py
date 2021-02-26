@@ -3,9 +3,12 @@
 import argparse
 import logging
 import os
+from selfsupmotion import data
 import shutil
 import sys
+from pl_bolts.models.self_supervised.resnets import resnet50
 from pytorch_lightning.cluster_environments import torchelastic_environment
+from torch.nn.modules.linear import Identity
 import yaml
 
 from yaml import load
@@ -59,9 +62,9 @@ def main():
     parser.add_argument('--debug', action='store_true')
     parser.add_argument("--embeddings-device",type=str,default="cuda",help="Which device to use for embeddings generation.")
     parser.add_argument('--embeddings', action='store_true',help="Skip training and generate embeddings for evaluation.")
-    parser.add_argument('--embeddings-ckpt', type=str, default=None, help="Checkpoint to load when generating embeddings.")
+    parser.add_argument('--initial-ckpt', type=str, default=None, help="Checkpoint to load when loading the model embeddings.")
     parser.add_argument("--dryrun", action="store_true", help="Dry-run by training on the validtion set. Use only to test loop code.")
-    
+    parser.add_argument("--embeddings-pretrain", action="store_true", help="Replace the backbone with a pretrained resnet-50 from PyTorch.")
 
     parser = pl.Trainer.add_argparse_args(parser)
 
@@ -156,16 +159,21 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger):
             crop_ratio=(hyper_params.get("crop_ratio_min", 0.75),hyper_params.get("crop_ratio_max", 1.33)),
             val_augmentation=hyper_params.get("val_augmentation", True),
             crop_strategy=hyper_params.get("crop_strategy", "centroid"),
-            sync_hflip=hyper_params.get("sync_hflip", False)
+            sync_hflip=hyper_params.get("sync_hflip", False),
+            coords=hyper_params.get("coords",None)
         )
         dm.setup()
 
-    elif args.data_module=="file":
-        dm = selfsupmotion.data.objectron.file_datamodule.ObjectronFileDataModule(
+    elif args.data_module[0:5]=="file_":
+        dataset_mode = args.data_module.split("_")[1]
+        dm = selfsupmotion.data.objectron.file_datamodule.FileThumbnailSequenceDataModule(
+            data_dir=args.data,
             num_workers=hyper_params["num_workers"],
             batch_size=hyper_params["batch_size"],
             pairing=hyper_params["pairing"],
-            dryrun=args.dryrun)
+            dryrun=args.dryrun,
+            dataset_mode=dataset_mode
+            )
         dm.setup() #In order to have the sample count.
     else:
         raise ValueError(f"Invalid datamodule specified on CLI : {args.data_module}")
@@ -189,20 +197,32 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger):
     if "early_stop_metric" not in hyper_params:
         hyper_params["early_stop_metric"]="val_loss"
 
-
-
+    model = load_model(hyper_params)
+    if args.initial_ckpt is not None:
+        print(f"Pre-loading weights from a manually specified checkpoint: {args.initial_ckpt}")
+        checkpoint = torch.load(args.initial_ckpt)
+        model.load_state_dict(checkpoint["state_dict"])
     
+
     if args.embeddings:
-        if args.embeddings_ckpt is None:
-            raise ValueError("Please manually provide the checkpoints using the --embeddings-ckpt argument")
-        model = load_model(hyper_params, checkpoint=args.embeddings_ckpt)
-        #model.load_from_checkpoint(args.embeddings_ckpt)
-        generate_embeddings(args, model, datamodule=dm,train=True, image_size=hyper_params["image_size"])
-        generate_embeddings(args, model, datamodule=dm,train=False, image_size=hyper_params["image_size"])
+        if args.initial_ckpt is None:
+            raise ValueError("Please manually provide the checkpoints using the --embeddings-ckpt argument")   
+        #model.load_from_checkpoint(args.initial_ckpt)
+        encoder = model.online_network.encoder
+        #projector  = model.online_network.projector
+        projector = None
+        feature_size = model.feature_dim
+        if args.embeddings_pretrain: #Quick and dirty hack to test a null model.
+            encoder = resnet50(pretrained=True)
+            feature_size = encoder.fc.in_features
+            encoder.fc = Identity()
+        generate_embeddings(args, encoder, datamodule=dm,train=True, image_size=hyper_params["image_size"], feature_size=feature_size, projector=projector)
+        generate_embeddings(args, encoder, datamodule=dm,train=False, image_size=hyper_params["image_size"], feature_size=feature_size, projector=projector)
     else:
         save_list_to_file(f"{output_dir}/train_sequences.txt", dm.train_dataset.seq_subset)
         save_list_to_file(f"{output_dir}/val_sequences.txt", dm.val_dataset.seq_subset)
-        model = load_model(hyper_params)
+        #model = load_model(hyper_params, checkpoint=args.initial_ckpt)
+
         train(model=model, optimizer=None, loss_fun=None, datamodule=dm,
               patience=hyper_params['patience'], output=output_dir,
               max_epoch=hyper_params['max_epoch'], use_progress_bar=not args.disable_progressbar,
@@ -216,7 +236,7 @@ from tqdm import tqdm
 import torch.nn.functional as F 
 import numpy as np
 
-def generate_embeddings(args, model, datamodule, train=True, image_size=224):
+def generate_embeddings(args, encoder, datamodule, train=True, image_size=224, feature_size=2048, projector=None):
     if train:
         dataloader = datamodule.train_dataloader(evaluation=True) #Do not use data augmentation for evaluation.
         dataset  = datamodule.train_dataset
@@ -226,12 +246,14 @@ def generate_embeddings(args, model, datamodule, train=True, image_size=224):
         dataset = datamodule.val_dataset
         prefix=""
 
-    encoder, projector = model.online_network.encoder, model.online_network.projector
+    #encoder, projector = model.online_network.encoder, model.online_network.projector
     local_progress=tqdm(dataloader)
     
-    model.online_network=model.online_network.to(args.embeddings_device)
+    encoder=encoder.to(args.embeddings_device)
+    if projector:
+        projector = projector.to(args.embeddings_device)
     #max_batch = int(args.subset_size*len(dataset)/args.batch_size)
-    all_features = torch.zeros((model.online_network.encoder.fc.in_features, len(dataset))).half().cuda()
+    all_features = torch.zeros((feature_size, len(dataset))).half().cuda()
         #train_features = torch.zeros((encoder.fc.in_features, max_batch*args.batch_size))
         
     #train_labels = torch.zeros(max_batch*args.batch_size, dtype=torch.int64).cuda()
@@ -251,15 +273,19 @@ def generate_embeddings(args, model, datamodule, train=True, image_size=224):
             base = batch_num*dataloader.batch_size
 
             #with autocast():
-            model.online_network.zero_grad()
+            encoder.zero_grad()
             #projector.zero_grad()
             #images1 = resize(images1,image_size)
             #_, z1, h1 = model.online_network(images1)
             #features= projector(encoder(images1)[0])
             #features = z1
-            features = model.online_network.encoder(images1)[0]
 
+            features = encoder(images1)
+            if len(features)==1:
+                features = features[0]
                 #features=encoder(images)[0]
+            if projector:
+                features=projector(features)
             features = F.normalize(features, dim=1)
             all_features[:,base:base+len(images1)]=features.t().cpu()
             #train_labels[base:base+len(images)]=labels
