@@ -40,10 +40,10 @@ def expand2square(pil_img, background_color=0):
         return result
 
 
-class ObjectronDataset(torch.utils.data.Dataset):
+class FileThumbnailSequenceDataset(torch.utils.data.Dataset):
     def __init__(self, root="datasets/objectron_96x96", split="train", memory=False, single=False, transform=None, 
                  debug_subset_size=None, return_indices = False, objectron_pair="uniform", objectron_exclude=[],
-                 enable_cache=False, horizontal_flip=True):
+                 enable_cache=False, horizontal_flip=True, dataset_mode="objectron"):
         self.root=root
         self.memory = memory
         self.pairing = objectron_pair #Pairing strategy: uniform, next
@@ -54,9 +54,12 @@ class ObjectronDataset(torch.utils.data.Dataset):
         self.single = single
         self.return_indices = return_indices
         self.enable_cache = enable_cache
+        if dataset_mode not in ["objectron","ycbv"]:
+            raise ValueError(f"Dataset mode not supported: {dataset_mode}")
+        self.dataset_mode = dataset_mode
         
-        if "OBJECTRON_CACHE" in os.environ:
-            self.enable_cache=True
+        #if "OBJECTRON_CACHE" in os.environ:
+        #    self.enable_cache=True
         self.horizontal_flip = horizontal_flip
         #splits = glob.glob(f"{root}/*/")
         #if len(splits)==0:
@@ -100,7 +103,10 @@ class ObjectronDataset(torch.utils.data.Dataset):
         basenames = self._get_basenames(category, split)
         sequences = {}
         for basename in basenames:
-            sequence_id = basename.split(".")[0] #"_".join([basename.split("_")[-3],basename.split("_")[-2],basename.split("_")[-1]])
+            if self.dataset_mode=="objectron":
+                sequence_id = basename.split(".")[0] #"_".join([basename.split("_")[-3],basename.split("_")[-2],basename.split("_")[-1]])
+            elif self.dataset_mode=="ycbv":
+                sequence_id = basename.split("_")[0]
             if sequence_id in sequences:
                 sequences[sequence_id].append(basename)
             else:
@@ -120,14 +126,19 @@ class ObjectronDataset(torch.utils.data.Dataset):
                 if len(self.sequences_by_categories[category][sequence])>5:
                     self.number_of_pictures+=len(self.sequences_by_categories[category][sequence])
                     for basename in self.sequences_by_categories[category][sequence]:
-                        #frame_id = basename.split(".")[-2].split("_")[-1]
-                        m = re.search("batch-(\d+)_(\d+)_(\d+).(\d+)\.jpg", basename)
-                        batch_number = int(m[1])
-                        sequence_number = int(m[2])
-                        object_id = int(m[3])
-                        frame_id = int(m[4])
+                        if self.dataset_mode=="objectron":
+                            frame_id = basename.split(".")[-2].split("_")[-1]
+                            m = re.search("batch-(\d+)_(\d+)_(\d+).(\d+)\.jpg", basename)
+                            batch_number = int(m[1])
+                            sequence_number = int(m[2])
+                            object_id = int(m[3])
+                            frame_id = int(m[4])
+                        elif self.dataset_mode=="ycbv":
+                            frame_id = basename.split("_")[-1][:-4]
+                        else:
+                            raise ValueError(f"Unsupported dataset mode:{self.dataset_mode}")
                         sample = {"category": category, "sequence": sequence, 
-                                  "basename": basename, "split": split, "frame_id": frame_id}
+                                    "basename": basename, "split": split, "frame_id": frame_id}
                         samples.append(sample)
                 else:
                     print(f"Skipping {category}/{sequence} : Not enough samples!")
@@ -238,8 +249,8 @@ class ObjectronDataset(torch.utils.data.Dataset):
 
 OBJECTRON_PATH = "datasets/objectron/96x96/"
 
-class ObjectronFileDataModule(pytorch_lightning.LightningDataModule):
-    def __init__(self, data_dir: str = OBJECTRON_PATH, batch_size=512, image_size=96, num_workers=6, pairing="next", dryrun=False):
+class FileThumbnailSequenceDataModule(pytorch_lightning.LightningDataModule):
+    def __init__(self, data_dir: str = OBJECTRON_PATH, batch_size=512, image_size=96, num_workers=6, pairing="next", dryrun=False, dataset_mode="objectron"):
         super().__init__()
         self.batch_size = batch_size
         self.image_size = image_size
@@ -247,6 +258,8 @@ class ObjectronFileDataModule(pytorch_lightning.LightningDataModule):
         self.num_workers = num_workers
         self.pairing = pairing
         self.dryrun = dryrun
+        self.dataset_mode = dataset_mode
+        self.data_dir = data_dir
     
     def setup(self, stage=None):
         if not self.issetup:
@@ -254,9 +267,12 @@ class ObjectronFileDataModule(pytorch_lightning.LightningDataModule):
             #eval_transform = self.get_objectron_transform(self.image_size, evaluation=True)
             self.train_transform = self.get_objectron_transform(self.image_size)
             self.eval_transform = self.get_objectron_transform(self.image_size, evaluation=True)
-            self.train_dataset = ObjectronDataset(OBJECTRON_PATH,split="train", transform=self.train_transform, objectron_pair=self.pairing)
-            self.val_dataset = ObjectronDataset(OBJECTRON_PATH, split="valid", transform=self.eval_transform, objectron_pair=self.pairing)
-            self.test_dataset = ObjectronDataset(OBJECTRON_PATH, split="test", transform=self.eval_transform, objectron_pair=self.pairing)
+            self.train_dataset = FileThumbnailSequenceDataset(self.data_dir,split="train", 
+                transform=self.train_transform, objectron_pair=self.pairing, dataset_mode=self.dataset_mode)
+            self.val_dataset = FileThumbnailSequenceDataset(self.data_dir, split="valid", 
+                transform=self.eval_transform, objectron_pair=self.pairing, dataset_mode=self.dataset_mode)
+            self.test_dataset = FileThumbnailSequenceDataset(self.data_dir, split="test", 
+                transform=self.eval_transform, objectron_pair=self.pairing, dataset_mode=self.dataset_mode)
             #self.train_dataset = ObjectronDataset(OBJECTRON_PATH,split="train", transform=self.train_transform)
             #self.train_eval_dataset = ObjectronDataset(OBJECTRON_PATH,split="train", transform=eval_transform)
             #self.val_dataset = ObjectronDataset(OBJECTRON_PATH, split="valid", transform=self.eval_transform)
@@ -308,7 +324,7 @@ from tqdm import tqdm
 
 if __name__ == "__main__":
     print("Data Module for Objectron 'File-Based'")
-    dm = ObjectronFileDataModule(num_workers=8)
+    dm = FileThumbnailSequenceDataModule(num_workers=8)
     dm.setup()
     for batch in tqdm(dm.train_dataloader(), total=int(len(dm.train_dataset)/dm.batch_size)):
         images, y = batch
