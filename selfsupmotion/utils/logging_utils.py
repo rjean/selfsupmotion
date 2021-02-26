@@ -10,6 +10,22 @@ from mlflow.utils.mlflow_tags import MLFLOW_RUN_NOTE
 logger = logging.getLogger(__name__)
 
 
+import torchvision
+import cv2
+
+def save_mosaic(filename, tensor):
+    inv_normalize = torchvision.transforms.Normalize(
+    mean=[-0.485/0.229, -0.456/0.224, -0.406/0.225],
+    std=[1/0.229, 1/0.224, 1/0.255])
+    #grid = torchvision.utils.make_grid(tensor)
+    tensor = inv_normalize(tensor[:,0:3,:,:]) #Ignore additionnal channels.
+    torchvision.utils.save_image(tensor, filename)
+    #img = img.detach().cpu().numpy().astype(np.uint8)
+    #img = np.swapaxes(img,2,0)
+    #img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+    #return cv2.imwrite(filename, img)
+
+
 class LoggerWriter:  # pragma: no cover
     """LoggerWriter.
 
