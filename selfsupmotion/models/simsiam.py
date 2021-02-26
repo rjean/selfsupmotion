@@ -8,6 +8,7 @@ import torch
 from pytorch_lightning.utilities import AMPType
 from torch.nn.modules.linear import Identity
 from torch.optim.optimizer import Optimizer
+import torchvision
 
 from pl_bolts.models.self_supervised.resnets import resnet18, resnet50
 from torchvision.models.shufflenetv2 import shufflenet_v2_x1_0
@@ -18,6 +19,7 @@ import torch.nn.functional as F
 import torch.nn as nn
 from typing import Optional, Tuple
 
+from selfsupmotion.utils.logging_utils import save_mosaic
 import selfsupmotion.zero_shot_pose as zsp
 
 logger = logging.getLogger(__name__)
@@ -144,21 +146,6 @@ class SiameseArm(nn.Module):
         h = self.predictor(z)
         return y, z, h
 
-import torchvision
-import cv2
-
-def save_mosaic(filename, tensor):
-    inv_normalize = torchvision.transforms.Normalize(
-    mean=[-0.485/0.229, -0.456/0.224, -0.406/0.225],
-    std=[1/0.229, 1/0.224, 1/0.255])
-    #grid = torchvision.utils.make_grid(tensor)
-    tensor = inv_normalize(tensor)
-    torchvision.utils.save_image(tensor, filename)
-    #img = img.detach().cpu().numpy().astype(np.uint8)
-    #img = np.swapaxes(img,2,0)
-    #img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-    #return cv2.imwrite(filename, img)
-
 class SimSiam(pl.LightningModule):
 
     def __init__(
@@ -174,6 +161,7 @@ class SimSiam(pl.LightningModule):
         self.num_samples = hyper_params.get("num_samples")
         self.num_samples_valid = hyper_params.get("num_samples_valid")
         self.batch_size = hyper_params.get("batch_size")
+        self.coords_channels = hyper_params.get("coords_channels",0)
 
         self.hidden_mlp = hyper_params.get("hidden_mlp", 2048)
         self.feat_dim = hyper_params.get("feat_dim", 128)
@@ -231,6 +219,8 @@ class SimSiam(pl.LightningModule):
             backbone = resnet50
             backbone_network = backbone(first_conv=self.first_conv, maxpool1=self.maxpool1, return_all_feature_maps=False)
             self.feature_dim = backbone_network.fc.in_features
+            if self.coords_channels>0:
+                backbone_network.conv1=nn.Conv2d(3+self.coords_channels,64,kernel_size=(7,7),stride=(2,2),padding=(3,3),bias=False)
         elif self.backbone == "shufflenet_v2_x1_0":
             backbone = shufflenet_v2_x1_0
             backbone_network = backbone()
@@ -284,8 +274,8 @@ class SimSiam(pl.LightningModule):
         if self.cuda_train_features is not None:
             self.cuda_train_features = None #Free GPU memory
         # Image 1 to image 2 loss
-        f1, z1, h1 = self.online_network(img_1)
-        f2, z2, h2 = self.online_network(img_2)
+        f1, z1, h1 = self.online_network(img_1.float())
+        f2, z2, h2 = self.online_network(img_2.float())
         loss = self.cosine_similarity(h1, z2) / 2 + self.cosine_similarity(h2, z1) / 2
 
         base = batch_idx*self.batch_size
@@ -312,8 +302,8 @@ class SimSiam(pl.LightningModule):
         y = batch["CAT_ID"]
 
         # Image 1 to image 2 loss
-        f1, z1, h1 = self.online_network(img_1)
-        f2, z2, h2 = self.online_network(img_2)
+        f1, z1, h1 = self.online_network(img_1.float())
+        f2, z2, h2 = self.online_network(img_2.float())
 
         loss = self.cosine_similarity(h1, z2) / 2 + self.cosine_similarity(h2, z1) / 2
 
