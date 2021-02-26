@@ -1,10 +1,13 @@
 import typing
 
 import albumentations
+from albumentations.augmentations import transforms
+from albumentations.augmentations.functional import normalize
 import numpy as np
 import PIL
 import torchvision
 import random
+import albumentations.pytorch
 
 try:
     import thelper
@@ -102,6 +105,7 @@ class SimSiamFramePairTrainDataTransform(object):
             augmentation = True, #Will be used to disable augmentation on inference / validation.
             crop_strategy = "centroid",
             sync_hflip= False,
+            coords = None,
     ) -> None:
         self.crop_height = crop_height
         self.input_height = input_height
@@ -114,6 +118,27 @@ class SimSiamFramePairTrainDataTransform(object):
         self.enable_augmentation= augmentation
         self.crop_strategy = crop_strategy
         self.sync_hflip=sync_hflip
+        self.pixel_transform = albumentations.Normalize()
+        self.coords = coords
+
+        pixel_transforms = [
+                albumentations.ColorJitter(
+                    brightness=0.4 * self.jitter_strength,
+                    contrast=0.4 * self.jitter_strength,
+                    saturation=0.4 * self.jitter_strength,
+                    hue=0.1 * self.jitter_strength,
+                    p=0.8,
+                ),
+                albumentations.ToGray(p=0.2),
+                albumentations.Normalize(),
+            ]
+
+        gaussian_blur = albumentations.GaussianBlur(
+                    blur_limit=(3, 5),
+                    #blur_limit=kernel_size,
+                    #sigma_limit=???
+                    p=0.5,
+                )
 
         bbox_transforms = [
                 albumentations.LongestMaxSize(
@@ -128,7 +153,8 @@ class SimSiamFramePairTrainDataTransform(object):
         assert self.crop_strategy in ["centroid","bbox"]
 
         if self.enable_augmentation:
-            augment_transforms = [
+            self.pixel_transform = albumentations.Compose(pixel_transforms)
+            geometric_transforms = [
                 albumentations.RandomResizedCrop(
                     height=self.input_height,
                     width=self.input_height,
@@ -137,45 +163,31 @@ class SimSiamFramePairTrainDataTransform(object):
                 ),
             ]
             if self.crop_strategy=="bbox":
-                augment_transforms = bbox_transforms + augment_transforms
+                geometric_transforms = bbox_transforms + geometric_transforms
             if use_hflip_augment:
-                augment_transforms.append(albumentations.HorizontalFlip(p=0.5))
-            augment_transforms.extend([
-                albumentations.ColorJitter(
-                    brightness=0.4 * self.jitter_strength,
-                    contrast=0.4 * self.jitter_strength,
-                    saturation=0.4 * self.jitter_strength,
-                    hue=0.1 * self.jitter_strength,
-                    p=0.8,
-                ),
-                albumentations.ToGray(p=0.2),
-            ])
+                geometric_transforms.append(albumentations.HorizontalFlip(p=0.5))
+            #augment_transforms.extend(pixel_transforms)
             if self.gaussian_blur:
-                # @@@@@ TODO: check what kernel size is best? is auto good enough?
-                #kernel_size = int(0.1 * self.input_height)
-                #if kernel_size % 2 == 0:
-                #    kernel_size += 1
-                augment_transforms.append(albumentations.GaussianBlur(
-                    blur_limit=(3, 5),
-                    #blur_limit=kernel_size,
-                    #sigma_limit=???
-                    p=0.5,
-                ))
+                geometric_transforms.append(gaussian_blur)
         else:
-            augment_transforms = bbox_transforms
+            geometric_transforms = bbox_transforms
         if self.seed_wrap_augments:
             assert thelper_available
-            self.augment_transform = thelper.transforms.wrappers.SeededOpWrapper(
-                operation=albumentations.Compose(augment_transforms),
+            self.geometric_transform = thelper.transforms.wrappers.SeededOpWrapper(
+                operation=albumentations.Compose(geometric_transforms),
                 sample_kw="image",
             )
         else:
-            self.augment_transform = albumentations.Compose(augment_transforms)
+            self.geometric_transform = albumentations.Compose(geometric_transforms)
 
-        self.convert_transform = torchvision.transforms.Compose([
-            torchvision.transforms.ToTensor(),
-            torchvision.transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        self.convert_transform = albumentations.Compose([
+            albumentations.pytorch.transforms.ToTensorV2(),
         ])
+        #    torchvision.transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        #])
+        #self.convert_transform = albumentations.pytorch.transforms.ToTensor(normalize=
+        #    {"mean":[0.485, 0.456, 0.406], "std":[0.229, 0.224, 0.225]}
+        #)
 
         # add online train transform of the size of global view
         self.online_augment_transform = albumentations.Compose([
@@ -186,10 +198,7 @@ class SimSiamFramePairTrainDataTransform(object):
             ),  # @@@@@@@@@ BAD W/O SEED WRAPPER?
             albumentations.HorizontalFlip(p=0.5),  # @@@@@@@@@ BAD W/O SEED WRAPPER?
         ])
-
-        self.sync_hflip_transform = albumentations.Compose([
-            albumentations.HorizontalFlip(p=1),  # @@@@@@@@@ BAD W/O SEED WRAPPER?
-        ])
+        self.sync_hflip_transform =  albumentations.HorizontalFlip(p=1)
 
     def __call__(self, sample):
         assert isinstance(sample, dict)
@@ -208,15 +217,33 @@ class SimSiamFramePairTrainDataTransform(object):
            
             if self.seed_wrap_augments:
                 assert "POINTS" not in sample, "missing impl"
-                aug_crop = self.augment_transform(sample["OBJ_CROPS"][crop_idx])
+                aug_crop = self.geometric_transform(sample["OBJ_CROPS"][crop_idx])
             else:
-                aug_crop = self.augment_transform(
-                    image=sample["OBJ_CROPS"][crop_idx],
+                #TODO: Add other channels.
+                if self.pixel_transform:
+                    pixels = self.pixel_transform(
+                        image=sample["OBJ_CROPS"][crop_idx],
+                    )
+                    sample["OBJ_CROPS"][crop_idx]=pixels["image"]
+
+                crop = sample["OBJ_CROPS"][crop_idx]
+                #crop = self.convert_transform(image=crop)["image"]
+                #Based on CoordConv ideas. This will feed additional coordinates 
+                #chanels to the first layer of the ResNet50. 
+                if self.coords=="xy":
+                    w = crop.shape[0]
+                    h = crop.shape[1]
+                    posx = np.tile(np.arange(0,w),(h,1)).T / w -0.5
+                    posy = np.tile(np.arange(0,h),(w,1)) / h -0.5
+                    crop = np.dstack([crop,posx, posy])
+
+                aug_crop = self.geometric_transform(
+                    image=crop,
                     keypoints=sample["POINTS"][crop_idx],
                     # the "xy" format somehow breaks when we have 2-coord kpts, this is why we pad to 4...
                     keypoint_params=albumentations.KeypointParams(format="xysa", remove_invisible=False),
                 )
-                
+
                 if self.sync_hflip and flip:
                     aug_crop = self.sync_hflip_transform(
                         image=aug_crop["image"],
@@ -224,9 +251,14 @@ class SimSiamFramePairTrainDataTransform(object):
                         keypoint_params=albumentations.KeypointParams(format="xysa", remove_invisible=False)
                     )
                 output_keypoints.append(aug_crop["keypoints"])
-
-            output_crops.append(self.convert_transform(PIL.Image.fromarray(aug_crop["image"])))
-        sample["OBJ_CROPS"] = output_crops
+                aug_crop = self.convert_transform(
+                        image=aug_crop["image"],
+                        keypoints=aug_crop["keypoints"],
+                        keypoint_params=albumentations.KeypointParams(format="xysa", remove_invisible=False)
+                    )
+                sample["OBJ_CROPS"][crop_idx] = aug_crop["image"]
+            #output_crops.append(self.convert_transform(PIL.Image.fromarray(aug_crop["image"])))
+        #sample["OBJ_CROPS"] = output_crops
         # finally, scrap the dumb padding around the 2d keypoints
         sample["POINTS"] = [pts for pts in np.asarray(output_keypoints)[..., :2].astype(np.float32)]
         if self.drop_orig_image:
