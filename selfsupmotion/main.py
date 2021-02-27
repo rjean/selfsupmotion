@@ -22,13 +22,8 @@ from selfsupmotion.utils.reproducibility_utils import set_seed
 import selfsupmotion.data.objectron.hdf5_parser
 import selfsupmotion.data.objectron.file_datamodule
 
-from torch.cuda.amp import autocast
-from torchvision.transforms.functional import resize
 
 logger = logging.getLogger(__name__)
-
-#import faulthandler
-#faulthandler.enable()
 
 
 def main():
@@ -98,12 +93,19 @@ def main():
     assert "output_dir" not in hyper_params
     hyper_params["output_dir"] = output_dir
     os.makedirs(mlflow_save_dir, exist_ok=True)
-    mlf_logger = MLFlowLogger(experiment_name=exp_name, save_dir=mlflow_save_dir)
+    mlf_logger = MLFlowLogger(
+        experiment_name=exp_name,
+        save_dir=mlflow_save_dir,
+    )
     if os.path.exists(os.path.join(output_dir, STAT_FILE_NAME)):
         mlf_logger._run_id = load_mlflow(output_dir)
         logger.warning(f"WILL CONTINUE LOGGING IN MLFLOW RUN ID: {mlf_logger._run_id}")
     os.makedirs(tbx_save_dir, exist_ok=True)
-    tbx_logger = TensorBoardLogger(save_dir=tbx_save_dir, name=exp_name)
+    tbx_logger = TensorBoardLogger(
+        save_dir=tbx_save_dir,
+        name=exp_name,
+        default_hp_metric=False,
+    )
 
     log_path = os.path.join(output_dir, "console.log")
     handler = logging.handlers.WatchedFileHandler(log_path)
@@ -120,10 +122,12 @@ def main():
     if args.tmp_folder is not None:
         rsync_folder(output_dir + os.path.sep, args.output)
 
+
 def save_list_to_file(filename, string_list):
     with open(filename,"w") as f:
         for string in string_list:
             f.write(f"{string}\n")
+
 
 def run(args, data_dir, output_dir, hyper_params, mlf_logger, tbx_logger):
     """Setup and run the dataloaders, training loops, etc.
@@ -147,7 +151,7 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger, tbx_logger):
         set_seed(hyper_params["seed"])
 
     if "precision" not in hyper_params:
-        hyper_params["precision"]=16
+        hyper_params["precision"] = 16
 
     log_exp_details(os.path.realpath(__file__), args)
 
@@ -185,27 +189,20 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger, tbx_logger):
     else:
         raise ValueError(f"Invalid datamodule specified on CLI : {args.data_module}")
 
-    if "num_samples" not in hyper_params:  
-        if hasattr(dm, "train_sample_count"):
-            hyper_params["num_samples"] = len(dm.train_dataset)
-        elif hasattr(dm, "train_dataset"):
+    if "num_samples" not in hyper_params:
+        if hasattr(dm, "train_dataset"):
             hyper_params["num_samples"] = len(dm.train_dataset)
         else:
             hyper_params["num_samples"] = None
 
     if "num_samples_valid" not in hyper_params:
-        if hasattr(dm, "valid_sample_count"):
-            hyper_params["num_samples_valid"] = len(dm.val_dataset)
-        elif hasattr(dm, "val_dataset"):
+        if hasattr(dm, "val_dataset"):
             hyper_params["num_samples_valid"] = len(dm.val_dataset)
         else:
             hyper_params["num_samples_valid"] = None
 
     if "early_stop_metric" not in hyper_params:
-        hyper_params["early_stop_metric"]="val_loss"
-
-
-
+        hyper_params["early_stop_metric"] = "val_loss"
     
     if args.embeddings:
         if args.embeddings_ckpt is None:
@@ -218,21 +215,17 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger, tbx_logger):
         save_list_to_file(f"{output_dir}/train_sequences.txt", dm.train_dataset.seq_subset)
         save_list_to_file(f"{output_dir}/val_sequences.txt", dm.val_dataset.seq_subset)
         model = load_model(hyper_params)
+        setattr(model, "_tbx_logger", tbx_logger)
+        setattr(model, "_mlf_logger", mlf_logger)
         train(
             model=model,
-            optimizer=None,
-            loss_fun=None,
             datamodule=dm,
-            patience=hyper_params['patience'],
             output=output_dir,
-            max_epoch=hyper_params['max_epoch'],
             use_progress_bar=not args.disable_progressbar,
             start_from_scratch=args.start_from_scratch,
             mlf_logger=mlf_logger,
             tbx_logger=tbx_logger,
-            precision=hyper_params["precision"],
-            early_stop_metric=hyper_params["early_stop_metric"],
-            accumulate_grad_batches=hyper_params.get("accumulate_grad_batches", 1),
+            hyper_params=hyper_params,
         )
 
 import torch

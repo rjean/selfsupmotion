@@ -4,6 +4,7 @@ import os
 import pickle
 import typing
 
+import cv2 as cv
 import numpy as np
 import pytorch_lightning as pl
 import torch
@@ -54,6 +55,8 @@ class KeypointsRegressor(pl.LightningModule):
 
         self.init_model()
         self.loss_fn = torch.nn.MSELoss()
+
+        self.example_input_array = torch.rand(1, 3, 224, 224)
 
         # compute iters per epoch
         nb_gpus = len(self.gpus) if isinstance(self.gpus, (list, tuple)) else self.gpus
@@ -163,6 +166,8 @@ class KeypointsRegressor(pl.LightningModule):
                 self.logged_proj_errors["val"][self.current_epoch][uid] = \
                     float(torch.nn.functional.mse_loss(
                         preds_stack[sample_idx], targets_stack[sample_idx] / self.input_height).cpu())
+        if batch_idx == 0 and hasattr(self, "_tbx_logger"):
+            self._write_batch_preds_images_to_tbx(batch=batch, preds=preds_stack, targets=targets_stack)
         return {
             "val_loss": loss,
             "val_mae_2d": val_mae_2d,
@@ -243,3 +248,21 @@ class KeypointsRegressor(pl.LightningModule):
             optimizer.step()
         else:
             optimizer.step(closure=optimizer_closure)
+
+    def _write_batch_preds_images_to_tbx(self, batch, preds, targets, max_imgs=30):
+        assert hasattr(self, "_tbx_logger")
+        norm_std = np.asarray([0.229, 0.224, 0.225]).reshape((1, 1, 3))
+        norm_mean = np.asarray([0.485, 0.456, 0.406]).reshape((1, 1, 3))
+        for idx in range(min(len(batch["OBJ_CROPS"][0]), max_imgs, len(preds))):
+            frame = batch["OBJ_CROPS"][0][idx].cpu()
+            frame = ((frame.squeeze(0).numpy().transpose((1, 2, 0)) * norm_std) + norm_mean) * 255
+            frame = frame.astype(np.uint8).copy()
+            for pred_pt, tgt_pt in zip(preds[idx], targets[idx]):  # targets in green, preds in red
+                # assume targets are already in abs coords, and we must scale predictions
+                tgt_pt = (int(round(tgt_pt[0].item())), int(round(tgt_pt[1].item())))
+                frame = cv.circle(frame, tgt_pt, radius=3, color=(127, 255, 112), thickness=-1)
+                pred_pt = (int(round(pred_pt[0].item() * self.input_height)),
+                           int(round(pred_pt[1].item() * self.input_height)))
+                frame = cv.circle(frame, pred_pt, radius=3, color=(255, 52, 52), thickness=-1)
+            self._tbx_logger.experiment.add_image(
+                batch["UID"][idx], frame, self.trainer.global_step, dataformats="HWC")

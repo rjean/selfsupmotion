@@ -12,8 +12,6 @@ import orion.client
 
 logger = logging.getLogger(__name__)
 
-BEST_MODEL_NAME = 'best_model'
-LAST_MODEL_NAME = 'last_model'
 STAT_FILE_NAME = 'stats.yaml'
 
 
@@ -61,57 +59,18 @@ def write_mlflow(output):
 
 def train_impl(
         model,
-        optimizer,
-        loss_fun,
         datamodule,
-        patience,
         output,
-        max_epoch,
         use_progress_bar,
         start_from_scratch,
         mlf_logger,
         tbx_logger,
-        precision,
-        early_stop_metric,
-        accumulate_grad_batches
+        hyper_params,
 ):  # pragma: no cover
-    """Main training loop implementation.
-
-    Args:
-        model (obj): The neural network model object.
-        optimizer (obj): Optimizer used during training.
-        loss_fun (obj): Loss function that will be optimized.
-        datamodule (obj): DataModule that contains both train/valid data loaders.
-        patience (int): max number of epochs without improving on `best_eval_score`.
-            After this point, the train ends.
-        output (str): Output directory.
-        max_epoch (int): Max number of epochs to train for.
-        use_progress_bar (bool): Use tqdm progress bar (can be disabled when logging).
-        start_from_scratch (bool): Start training from scratch (ignore checkpoints)
-        mlf_logger (obj): MLFlow logger callback.
-        tbx_logger (obj): TensorBoard logger callback.
-    """
 
     write_mlflow(output)
 
-    best_checkpoint_callback = pl.callbacks.ModelCheckpoint(
-        filepath=os.path.join(output, BEST_MODEL_NAME),
-        save_top_k=1,
-        verbose=use_progress_bar,
-        monitor="val_loss",
-        mode="auto",
-        period=1
-    )
-
-    last_model_path = os.path.join(output, LAST_MODEL_NAME)
-    last_checkpoint_callback = pl.callbacks.ModelCheckpoint(
-        filepath=last_model_path,
-        verbose=use_progress_bar,
-        period=1
-    )
-
-    last_models = glob.glob(last_model_path + '*')
-
+    last_models = glob.glob(os.path.join(output, "last-*"))
     if start_from_scratch:
         logger.info('will not load any pre-existent checkpoint.')
         resume_from_checkpoint = None
@@ -124,33 +83,54 @@ def train_impl(
         logger.info('no model found - starting training from scratch')
         resume_from_checkpoint = None
 
-    if early_stop_metric != "none":
-        early_stopping = pl.callbacks.EarlyStopping(early_stop_metric, mode="auto", patience=patience, verbose=use_progress_bar)
-        callbacks = [early_stopping]
+    early_stopping = None
+    if hyper_params["early_stop_metric"] not in ["None", "none", "", None]:
+        early_stopping = pl.callbacks.EarlyStopping(
+            monitor=hyper_params["early_stop_metric"],
+            patience=hyper_params["patience"],
+            verbose=use_progress_bar,
+            mode="auto",
+        )
+        best_checkpoint_callback = pl.callbacks.ModelCheckpoint(
+            dirpath=output,
+            filename="best-{epoch}-{step}",
+            monitor=hyper_params["early_stop_metric"],
+            verbose=use_progress_bar,
+            mode="auto",
+        )
+        callbacks = [early_stopping, best_checkpoint_callback]
     else:
         callbacks = []
 
     printer_callback = pl_bolts.callbacks.PrintTableMetricsCallback()
+    last_checkpoint_callback = pl.callbacks.ModelCheckpoint(
+        dirpath=output,
+        filename="last-{epoch}-{step}",
+        verbose=use_progress_bar,
+    )
     callbacks = callbacks.extend([
-        best_checkpoint_callback,
-        last_checkpoint_callback,
         printer_callback,
+        last_checkpoint_callback,
     ])
+
     trainer = pl.Trainer(
         # @@@@@@@@@@@ TODO check if we can add an online evaluator w/ callback
         callbacks=callbacks,
         checkpoint_callback=True,
         logger=[mlf_logger, tbx_logger],
-        max_epochs=max_epoch,
+        max_epochs=hyper_params["max_epoch"],
         resume_from_checkpoint=resume_from_checkpoint,
         gpus=torch.cuda.device_count(),
         auto_select_gpus=True,
-        precision=precision,
+        precision=hyper_params["precision"],
         amp_level="O1",
         accelerator=None,
-        accumulate_grad_batches=accumulate_grad_batches
+        accumulate_grad_batches=hyper_params.get("accumulate_grad_batches", 1),
     )
 
     trainer.fit(model, datamodule=datamodule)
-    best_dev_result = float(early_stopping.best_score.cpu().numpy())
+    if early_stopping is not None:
+        best_dev_result = float(early_stopping.best_score.cpu().numpy())
+    else:
+        return -999
     return best_dev_result
