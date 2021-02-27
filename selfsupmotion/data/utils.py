@@ -4,6 +4,7 @@ import typing
 
 import cv2 as cv
 import numpy as np
+import torch.utils.data
 
 
 def project_points(points, projection_matrix, view_matrix, width, height):
@@ -110,3 +111,24 @@ def get_label_color_mapping(idx):
         b = b | (bitget(idx, 2) << 7 - j)
         idx = idx >> 3
     return np.array([r, g, b], dtype=np.uint8)
+
+
+class ConstantRandomOrderSampler(torch.utils.data.Sampler[int]):
+    """
+    Samples elements based on a random but constant order picked on construction.
+
+    Args:
+        data_source (Dataset): dataset to sample from
+    """
+    data_source: typing.Sized
+
+    def __init__(self, data_source):
+        self.sample_idxs = np.random.permutation(len(data_source))
+        self.data_source = data_source
+
+    def __iter__(self):
+        assert len(self.data_source) == len(self.sample_idxs)
+        return iter(self.sample_idxs)
+
+    def __len__(self) -> int:
+        return len(self.data_source)

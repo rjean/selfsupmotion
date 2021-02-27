@@ -343,6 +343,7 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
         return torch.utils.data.DataLoader(
             self.val_dataset,
             batch_size=self.batch_size,
+            sampler=selfsupmotion.data.utils.ConstantRandomOrderSampler(self.val_dataset),
             shuffle=False,
             num_workers=self.num_workers,
             drop_last=self.drop_last,
