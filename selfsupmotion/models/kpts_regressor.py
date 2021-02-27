@@ -116,8 +116,6 @@ class KeypointsRegressor(pl.LightningModule):
         preds_stack = torch.cat(preds_stack)
         targets_stack = torch.cat(targets_stack)
         self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=False, logger=True)
-        self.log("lr", self.lr_schedule[self.trainer.global_step],
-                 on_step=True, on_epoch=False, prog_bar=False, logger=True)
         train_mae_2d = torch.nn.functional.l1_loss(preds_stack * self.input_height, targets_stack)
         self.log("train_mae_2d", train_mae_2d, on_step=True, on_epoch=True, prog_bar=False, logger=True)
         if self.log_proj_errors:
@@ -127,6 +125,7 @@ class KeypointsRegressor(pl.LightningModule):
                 self.logged_proj_errors["train"][self.current_epoch][uid] = \
                     float(torch.nn.functional.mse_loss(
                         preds_stack[sample_idx], targets_stack[sample_idx] / self.input_height).cpu())
+        self.log("lr", self._get_latest_lr(), on_step=True, on_epoch=False, prog_bar=False, logger=True)
         return {
             "loss": loss,
             "train_mae_2d": train_mae_2d,
@@ -203,20 +202,21 @@ class KeypointsRegressor(pl.LightningModule):
             params = self.exclude_from_wt_decay(self.named_parameters(), weight_decay=self.weight_decay)
         else:
             params = self.parameters()
-
         if self.optim == 'sgd':
             optimizer = torch.optim.SGD(params, lr=self.learning_rate, momentum=0.9, weight_decay=self.weight_decay)
         elif self.optim == 'adam':
             optimizer = torch.optim.Adam(params, lr=self.learning_rate, weight_decay=self.weight_decay)
-
         if self.lars_wrapper:
             optimizer = LARSWrapper(
                 optimizer,
                 eta=0.001,  # trust coefficient
                 clip=False
             )
-
         return optimizer
+
+    def _get_latest_lr(self):
+        capped_global_step = min(len(self.lr_schedule) - 1, self.trainer.global_step)
+        return self.lr_schedule[capped_global_step]
 
     def optimizer_step(
             self,
@@ -231,19 +231,13 @@ class KeypointsRegressor(pl.LightningModule):
     ) -> None:
         # warm-up + decay schedule placed here since LARSWrapper is not optimizer class
         # adjust LR of optim contained within LARSWrapper
-        capped_global_step = max(len(self.lr_schedule) - 1, self.trainer.global_step)
-        new_learning_rate = self.lr_schedule[capped_global_step]
+        new_learning_rate = self._get_latest_lr()
         if self.lars_wrapper:
             for param_group in optimizer.optim.param_groups:
                 param_group["lr"] = new_learning_rate
         else:
             for param_group in optimizer.param_groups:
                 param_group["lr"] = new_learning_rate
-
-        # log LR (LearningRateLogger callback doesn't work with LARSWrapper)
-        self.log('learning_rate', new_learning_rate, on_step=True, on_epoch=False)
-
-        # from lightning
         if self.trainer.amp_backend == AMPType.APEX:
             optimizer_closure()
             optimizer.step()

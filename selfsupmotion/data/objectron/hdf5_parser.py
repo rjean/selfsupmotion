@@ -161,7 +161,7 @@ class ObjectronHDF5FrameTupleParser(ObjectronHDF5SequenceParser):
                 # note: the frame idx here is not the real index if the sequence was subsampled
                 tuple_start_idx = 0
                 while tuple_start_idx < seq_len:
-                    candidate_tuple_idxs, candidate_tuple_kpts = [], []
+                    candidate_tuple_vals = collections.defaultdict(list)
                     for tuple_idx_offset in range(self.tuple_length):
                         curr_frame_idx = tuple_start_idx + tuple_idx_offset * self.frame_offset
                         if curr_frame_idx >= seq_len:
@@ -169,19 +169,18 @@ class ObjectronHDF5FrameTupleParser(ObjectronHDF5SequenceParser):
                         if not self._is_frame_valid(seq_data, curr_frame_idx):
                             break  # if an element has a bad frame, break it off
                         # we also get the 2d point projections here
-                        curr_pts = seq_data["POINT_2D"][curr_frame_idx].reshape((-1, 3))[:, :2]
-                        assert len(curr_pts) == 9, "did we not melt the dataset down to 1 instance?"
+                        curr_pts_2d = seq_data["POINT_2D"][curr_frame_idx].reshape((-1, 3))[:, :2]
+                        assert len(curr_pts_2d) == 9, "did we not melt the dataset down to 1 instance?"
                         if self.keep_only_frames_with_valid_kpts:
                             # arbitrary pick: min valid keypoint count = 3
-                            good_kpts = np.logical_and(curr_pts <= 1, curr_pts >= 0).all(axis=1)
+                            good_kpts = np.logical_and(curr_pts_2d <= 1, curr_pts_2d >= 0).all(axis=1)
                             if sum(good_kpts) < 3:
                                 break
-                        candidate_tuple_idxs.append(curr_frame_idx)
-                        candidate_tuple_kpts.append(np.multiply(curr_pts, seq_image_size))
-                    if len(candidate_tuple_idxs) == self.tuple_length:  # if it's all good, keep it
-                        # the map will match sample indices to (SEQ_ID, TUPLE_FRAME_IDXS, TUPLE_KPTS_ARRAY)
-                        tuple_map[len(tuple_map)] = \
-                            (seq_name, tuple(candidate_tuple_idxs), np.asarray(candidate_tuple_kpts))
+                        candidate_tuple_vals["POINT_2D"].append(np.multiply(curr_pts_2d, seq_image_size))
+                        candidate_tuple_vals["frame_idxs"].append(curr_frame_idx)
+                    if len(candidate_tuple_vals["frame_idxs"]) == self.tuple_length:  # if it's all good, keep it
+                        candidate_tuple_vals["seq_name"] = seq_name
+                        tuple_map[len(tuple_map)] = dict(candidate_tuple_vals)
                     tuple_start_idx += self.tuple_offset
         return tuple_map
 
@@ -193,21 +192,23 @@ class ObjectronHDF5FrameTupleParser(ObjectronHDF5SequenceParser):
         if self.local_fd is None:
             self.local_fd = h5py.File(self.hdf5_path, mode="r")
         meta = self.frame_pair_map[idx]
-        seq_data = self.local_fd[meta[0]]
+        seq_name = meta["seq_name"]
+        seq_data = self.local_fd[seq_name]
         sample = {
             field: np.stack([
                 self._decode_jpeg(seq_data[field][frame_idx])
                 if field == "IMAGE" else seq_data[field][frame_idx]
-                for frame_idx in meta[1]
+                for frame_idx in meta["frame_idxs"]
             ]) for field in self.target_fields
         }
-        uid = "hdf5_" + meta[0] + "_" + str(seq_data["IMAGE_ID"][meta[1][0]]) #Not compatible with my notebooks.
+        uid = f"hdf5_{seq_name}_" + str(seq_data["IMAGE_ID"][meta["frame_idxs"][0]])
         sample = {
-            "SEQ_IDX": meta[0],
+            "SEQ_IDX": seq_name,
             "UID": uid, #TODO: Harmonize Unique Identifiers for evaluation.
-            "FRAME_IDXS": np.asarray([seq_data["IMAGE_ID"][idx] for idx in meta[1]]),
-            "POINTS": np.pad(np.asarray(meta[2]), ((0, 0), (0, 0), (0, 2))),  # pad kpts for augments
-            "CAT_ID": self.objects.index(meta[0].split("/")[0]),
+            "FRAME_REAL_IDXS": np.asarray([seq_data["IMAGE_ID"][idx] for idx in meta["frame_idxs"]]),
+            "FRAME_IDXS": np.asarray(meta["frame_idxs"]),
+            "POINTS": np.pad(np.asarray(meta["POINT_2D"]), ((0, 0), (0, 0), (0, 2))),  # pad 2d kpts for augments
+            "CAT_ID": self.objects.index(seq_name.split("/")[0]),
             **sample,
         }
         if self.transforms is not None:
@@ -287,8 +288,8 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
         self.train_seq_count = len(seq_subset_idxs) - self.valid_seq_count
         self.valid_seq_subset = sorted([dataset.seq_subset[idx] for idx in seq_subset_idxs[:self.valid_seq_count]])
         self.train_seq_subset = sorted([dataset.seq_subset[idx] for idx in seq_subset_idxs[self.valid_seq_count:]])
-        self.valid_sample_subset = [idx for idx, tup in dataset.frame_pair_map.items() if tup[0] in self.valid_seq_subset]
-        self.train_sample_subset = [idx for idx, tup in dataset.frame_pair_map.items() if tup[0] in self.train_seq_subset]
+        self.valid_sample_subset = [idx for idx, m in dataset.frame_pair_map.items() if m["seq_name"] in self.valid_seq_subset]
+        self.train_sample_subset = [idx for idx, m in dataset.frame_pair_map.items() if m["seq_name"] in self.train_seq_subset]
         self.valid_sample_count = len(self.valid_sample_subset)
         self.train_sample_count = len(self.train_sample_subset)
         assert len(np.intersect1d(self.valid_seq_subset, self.train_seq_subset)) == 0
@@ -302,6 +303,9 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
             self.val_transforms = self.val_transform()
         if self.train_transforms is None:
             self.train_transforms = self.train_transform()
+        target_fields = [
+            "IMAGE", "CENTROID_2D_IM", "POINT_3D", "PROJECTION_MATRIX", "VIEW_MATRIX",
+        ]
         self.val_dataset = ObjectronHDF5FrameTupleParser(
             hdf5_path=self.hdf5_path,
             seq_subset=self.valid_seq_subset,
@@ -309,7 +313,7 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
             frame_offset=self.frame_offset,
             tuple_offset=self.tuple_offset,
             keep_only_frames_with_valid_kpts=self.keep_only_frames_with_valid_kpts,
-            _target_fields=["IMAGE", "CENTROID_2D_IM"],
+            _target_fields=target_fields,
             _transforms=self.val_transforms,
         )
         self.train_dataset = ObjectronHDF5FrameTupleParser(
@@ -319,7 +323,7 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
             frame_offset=self.frame_offset,
             tuple_offset=self.tuple_offset,
             keep_only_frames_with_valid_kpts=self.keep_only_frames_with_valid_kpts,
-            _target_fields=["IMAGE", "CENTROID_2D_IM"],
+            _target_fields=target_fields,
             _transforms=self.train_transforms,
         )
 
