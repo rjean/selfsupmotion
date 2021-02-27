@@ -1,5 +1,7 @@
 import logging
 import math
+import os
+import pickle
 import typing
 
 import numpy as np
@@ -26,25 +28,29 @@ class KeypointsRegressor(pl.LightningModule):
 
         self.gpus = hyper_params.get("gpus")
         self.num_nodes = hyper_params.get("num_nodes", 1)
-        self.backbone = hyper_params.get("backbone", "resnet50")
+        self.backbone = hyper_params.get("backbone")
         self.num_samples = hyper_params.get("num_samples")
         self.batch_size = hyper_params.get("batch_size")
 
-        self.first_conv = hyper_params.get("first_conv", True)
-        self.maxpool1 = hyper_params.get("maxpool1", True)
-        self.dropout = hyper_params.get("dropout", None)
-        self.input_height = hyper_params.get("input_height", 224)
+        self.first_conv = hyper_params.get("first_conv")
+        self.maxpool1 = hyper_params.get("maxpool1")
+        self.dropout = hyper_params.get("dropout")
+        self.input_height = hyper_params.get("input_height")
 
-        self.optim = hyper_params.get("optimizer", "adam")
-        self.lars_wrapper = hyper_params.get("lars_wrapper", False)
-        self.exclude_bn_bias = hyper_params.get("exclude_bn_bias", False)
-        self.weight_decay = hyper_params.get("weight_decay", 1e-6)
+        self.optim = hyper_params.get("optimizer")
+        self.lars_wrapper = hyper_params.get("lars_wrapper")
+        self.exclude_bn_bias = hyper_params.get("exclude_bn_bias")
+        self.weight_decay = hyper_params.get("weight_decay")
 
-        self.start_lr = hyper_params.get("start_lr", 0.)
-        self.final_lr = hyper_params.get("final_lr", 1e-6)
-        self.learning_rate = hyper_params.get("learning_rate", 1e-3)
-        self.warmup_epochs = hyper_params.get("warmup_epochs", 5)
-        self.max_epochs = hyper_params.get("max_epochs", 50)
+        self.start_lr = hyper_params.get("start_lr")
+        self.final_lr = hyper_params.get("final_lr")
+        self.learning_rate = hyper_params.get("learning_rate")
+        self.warmup_epochs = hyper_params.get("warmup_epochs")
+        self.max_epochs = hyper_params.get("max_epoch")
+
+        self.output_dir = hyper_params.get("output_dir")
+        self.log_proj_errors = hyper_params.get("log_proj_errors")
+        self.logged_proj_errors = {"train": {}, "val": {}}  # set-to-epoch-to-uid-to-error map
 
         self.init_model()
         self.loss_fn = torch.nn.MSELoss()
@@ -114,10 +120,23 @@ class KeypointsRegressor(pl.LightningModule):
                  on_step=True, on_epoch=False, prog_bar=False, logger=True)
         train_mae_2d = torch.nn.functional.l1_loss(preds_stack * self.input_height, targets_stack)
         self.log("train_mae_2d", train_mae_2d, on_step=True, on_epoch=True, prog_bar=False, logger=True)
+        if self.log_proj_errors:
+            if self.current_epoch not in self.logged_proj_errors["train"]:
+                self.logged_proj_errors["train"][self.current_epoch] = {}
+            for sample_idx, uid in enumerate(batch["UID"]):
+                self.logged_proj_errors["train"][self.current_epoch][uid] = \
+                    float(torch.nn.functional.mse_loss(
+                        preds_stack[sample_idx], targets_stack[sample_idx] / self.input_height).cpu())
         return {
             "loss": loss,
             "train_mae_2d": train_mae_2d,
         }
+
+    def training_epoch_end(self, outputs: typing.List[typing.Any]) -> None:
+        if self.log_proj_errors:
+            log_proj_errors_dump_path = os.path.join(self.output_dir, "proj_errors.pkl")
+            with open(log_proj_errors_dump_path, "wb") as fd:
+                pickle.dump(self.logged_proj_errors, fd)
 
     def validation_step(self, batch, batch_idx):
         loss = None
@@ -138,10 +157,23 @@ class KeypointsRegressor(pl.LightningModule):
         self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=False, logger=True)
         val_mae_2d = torch.nn.functional.l1_loss(preds_stack * self.input_height, targets_stack)
         self.log("val_mae_2d", val_mae_2d, on_step=False, on_epoch=True, prog_bar=False, logger=True)
+        if self.log_proj_errors:
+            if self.current_epoch not in self.logged_proj_errors["val"]:
+                self.logged_proj_errors["val"][self.current_epoch] = {}
+            for sample_idx, uid in enumerate(batch["UID"]):
+                self.logged_proj_errors["val"][self.current_epoch][uid] = \
+                    float(torch.nn.functional.mse_loss(
+                        preds_stack[sample_idx], targets_stack[sample_idx] / self.input_height).cpu())
         return {
             "val_loss": loss,
             "val_mae_2d": val_mae_2d,
         }
+
+    def validation_epoch_end(self, outputs: typing.List[typing.Any]) -> None:
+        if self.log_proj_errors:
+            log_proj_errors_dump_path = os.path.join(self.output_dir, "proj_errors.pkl")
+            with open(log_proj_errors_dump_path, "wb") as fd:
+                pickle.dump(self.logged_proj_errors, fd)
 
     def exclude_from_wt_decay(self, named_params, weight_decay, skip_list=['bias', 'bn']):
         params = []
@@ -199,15 +231,17 @@ class KeypointsRegressor(pl.LightningModule):
     ) -> None:
         # warm-up + decay schedule placed here since LARSWrapper is not optimizer class
         # adjust LR of optim contained within LARSWrapper
+        capped_global_step = max(len(self.lr_schedule) - 1, self.trainer.global_step)
+        new_learning_rate = self.lr_schedule[capped_global_step]
         if self.lars_wrapper:
             for param_group in optimizer.optim.param_groups:
-                param_group["lr"] = self.lr_schedule[self.trainer.global_step]
+                param_group["lr"] = new_learning_rate
         else:
             for param_group in optimizer.param_groups:
-                param_group["lr"] = self.lr_schedule[self.trainer.global_step]
+                param_group["lr"] = new_learning_rate
 
         # log LR (LearningRateLogger callback doesn't work with LARSWrapper)
-        self.log('learning_rate', self.lr_schedule[self.trainer.global_step], on_step=True, on_epoch=False)
+        self.log('learning_rate', new_learning_rate, on_step=True, on_epoch=False)
 
         # from lightning
         if self.trainer.amp_backend == AMPType.APEX:

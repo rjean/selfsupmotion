@@ -176,7 +176,7 @@ class SimSiam(pl.LightningModule):
         self.maxpool1 = hyper_params.get("maxpool1", True)
 
         self.optim = hyper_params.get("optimizer", "adam")
-        self.lars_wrapper = hyper_params.get("lars_wrapper", True)
+        self.lars_wrapper = hyper_params.get("lars_wrapper", False)
         self.exclude_bn_bias = hyper_params.get("exclude_bn_bias", False)
         self.weight_decay = hyper_params.get("weight_decay", 1e-6)
         self.temperature = hyper_params.get("temperature", 0.1)
@@ -279,7 +279,9 @@ class SimSiam(pl.LightningModule):
         self.train_features[base:base+train_features.shape[0]]=train_features
         self.train_targets[base:base+train_features.shape[0]]=y
         # log results
-        self.log("train_loss", loss)
+        self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=False, logger=True)
+        self.log("lr", self.lr_schedule[self.trainer.global_step],
+                 on_step=True, on_epoch=False, prog_bar=False, logger=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
@@ -317,8 +319,8 @@ class SimSiam(pl.LightningModule):
         
 
         # log results
-        self.log("val_loss", loss)
         self.log("val_accuracy", accuracy)
+        self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=False, logger=True)
 
         return loss
 
@@ -401,9 +403,6 @@ class SimSiam(pl.LightningModule):
                 else:
                     param_group["lr"] = self.lr_schedule[self.trainer.global_step]
             #param_group[0]["lr"]
-
-        # log LR (LearningRateLogger callback doesn't work with LARSWrapper)
-        self.log('learning_rate', self.lr_schedule[self.trainer.global_step], on_step=True, on_epoch=False)
 
         # from lightning
         #if self.trainer.amp_backend == AMPType.NATIVE:

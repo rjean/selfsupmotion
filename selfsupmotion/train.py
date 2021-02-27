@@ -1,12 +1,14 @@
-
 import glob
 import logging
 import os
+import yaml
 
+import mlflow
 import torch
 import pl_bolts
 import pytorch_lightning as pl
-from orion.client import report_results
+import orion.client
+
 
 logger = logging.getLogger(__name__)
 
@@ -17,12 +19,10 @@ STAT_FILE_NAME = 'stats.yaml'
 
 def train(**kwargs):  # pragma: no cover
     """Training loop wrapper. Used to catch exception if Orion is being used."""
-    best_dev_metric = train_impl(**kwargs)
     try:
-        # TODO @@@@@@@@@@@@@@@@@@@@@@ FIXME
-        pass
+        best_dev_metric = train_impl(**kwargs)
     except RuntimeError as err:
-        if orion.client.IS_ORION_ON and 'CUDA out of memory' in str(err):
+        if orion.client.cli.IS_ORION_ON and 'CUDA out of memory' in str(err):
             logger.error(err)
             logger.error('model was out of memory - assigning a bad score to tell Orion to avoid'
                          'too big model')
@@ -30,11 +30,33 @@ def train(**kwargs):  # pragma: no cover
         else:
             raise err
 
-    report_results([dict(
+    orion.client.report_results([dict(
         name='dev_metric',
         type='objective',
         # note the minus - cause orion is always trying to minimize (cit. from the guide)
         value=-float(best_dev_metric))])
+
+
+def load_mlflow(output):
+    """Load the mlflow run id.
+    Args:
+        output (str): Output directory
+    """
+    with open(os.path.join(output, STAT_FILE_NAME), 'r') as stream:
+        stats = yaml.load(stream, Loader=yaml.FullLoader)
+    return stats['mlflow_run_id']
+
+
+def write_mlflow(output):
+    """Write the mlflow info to resume the training plotting..
+    Args:
+        output (str): Output directory
+    """
+    mlflow_run = mlflow.active_run()
+    mlflow_run_id = mlflow_run.info.run_id if mlflow_run is not None else 'NO_MLFLOW'
+    to_store = {'mlflow_run_id': mlflow_run_id}
+    with open(os.path.join(output, STAT_FILE_NAME), 'w') as stream:
+        yaml.dump(to_store, stream)
 
 
 def train_impl(
@@ -69,6 +91,9 @@ def train_impl(
         mlf_logger (obj): MLFlow logger callback.
         tbx_logger (obj): TensorBoard logger callback.
     """
+
+    write_mlflow(output)
+
     best_checkpoint_callback = pl.callbacks.ModelCheckpoint(
         filepath=os.path.join(output, BEST_MODEL_NAME),
         save_top_k=1,
@@ -87,13 +112,16 @@ def train_impl(
 
     last_models = glob.glob(last_model_path + '*')
 
-    if len(last_models) > 1:
+    if start_from_scratch:
+        logger.info('will not load any pre-existent checkpoint.')
+        resume_from_checkpoint = None
+    elif len(last_models) > 1:
         raise ValueError('more than one last model found to resume - provide only one')
     elif len(last_models) == 1:
         logger.info('resuming training from {}'.format(last_models[0]))
         resume_from_checkpoint = last_models[0]
     else:
-        logger.info('starting training from scratch')
+        logger.info('no model found - starting training from scratch')
         resume_from_checkpoint = None
 
     if early_stop_metric != "none":

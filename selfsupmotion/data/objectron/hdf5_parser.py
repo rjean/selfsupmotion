@@ -4,6 +4,7 @@ This module contains dataset parsers used to load the HDF5 archive of the Object
 See https://github.com/google-research-datasets/Objectron for more info.
 """
 
+import collections
 import os
 import typing
 import time
@@ -118,6 +119,7 @@ class ObjectronHDF5FrameTupleParser(ObjectronHDF5SequenceParser):
             tuple_length: int = 2,  # by default, we will create pairs of frames
             frame_offset: int = 1,  # by default, we will create tuples from consecutive frames
             tuple_offset: int = 2,  # by default, we will skip a frame between tuples
+            keep_only_frames_with_valid_kpts: bool = False,  # set to true when training on kpts
             _target_fields: typing.Optional[typing.List[typing.AnyStr]] = None,
             _transforms: typing.Optional[typing.Any] = None,
     ):
@@ -130,6 +132,7 @@ class ObjectronHDF5FrameTupleParser(ObjectronHDF5SequenceParser):
         self.tuple_length = tuple_length
         self.frame_offset = frame_offset
         self.tuple_offset = tuple_offset
+        self.keep_only_frames_with_valid_kpts = keep_only_frames_with_valid_kpts
         self.target_fields = self.data_fields if not _target_fields else _target_fields
         self.transforms = _transforms
         cache_path = os.path.join(os.path.dirname(hdf5_path), cache_hash + ".pkl")
@@ -165,10 +168,15 @@ class ObjectronHDF5FrameTupleParser(ObjectronHDF5SequenceParser):
                             break  # if we're oob for any element in the tuple, break it off
                         if not self._is_frame_valid(seq_data, curr_frame_idx):
                             break  # if an element has a bad frame, break it off
-                        candidate_tuple_idxs.append(curr_frame_idx)
                         # we also get the 2d point projections here
                         curr_pts = seq_data["POINT_2D"][curr_frame_idx].reshape((-1, 3))[:, :2]
                         assert len(curr_pts) == 9, "did we not melt the dataset down to 1 instance?"
+                        if self.keep_only_frames_with_valid_kpts:
+                            # arbitrary pick: min valid keypoint count = 3
+                            good_kpts = np.logical_and(curr_pts <= 1, curr_pts >= 0).all(axis=1)
+                            if sum(good_kpts) < 3:
+                                break
+                        candidate_tuple_idxs.append(curr_frame_idx)
                         candidate_tuple_kpts.append(np.multiply(curr_pts, seq_image_size))
                     if len(candidate_tuple_idxs) == self.tuple_length:  # if it's all good, keep it
                         # the map will match sample indices to (SEQ_ID, TUPLE_FRAME_IDXS, TUPLE_KPTS_ARRAY)
@@ -195,7 +203,6 @@ class ObjectronHDF5FrameTupleParser(ObjectronHDF5SequenceParser):
         }
         uid = "hdf5_" + meta[0] + "_" + str(seq_data["IMAGE_ID"][meta[1][0]]) #Not compatible with my notebooks.
         sample = {
-            "UID": f"{meta[0]}{seq_data['IMAGE_ID'][meta[1][0]]}",
             "SEQ_IDX": meta[0],
             "UID": uid, #TODO: Harmonize Unique Identifiers for evaluation.
             "FRAME_IDXS": np.asarray([seq_data["IMAGE_ID"][idx] for idx in meta[1]]),
@@ -215,10 +222,10 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
     def __init__(
             self,
             hdf5_path: typing.AnyStr,
-            keypoints_mode: bool = False,
             tuple_length: int = 2,
             frame_offset: int = 1,
             tuple_offset: int = 2,
+            keep_only_frames_with_valid_kpts: bool = False,
             input_height: int = 224,
             gaussian_blur: bool = True,
             jitter_strength: float = 1.0,
@@ -226,14 +233,15 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
             num_workers: int = 8,
             batch_size: int = 256,
             split_seed: int = 1337,
-            pin_memory: bool = False,
+            pin_memory: bool = True,
             drop_last: bool = False,
-            shared_transform: bool=True,
-            crop_scale: tuple = (0.2,1),
-            crop_ratio: tuple = (0.75,1.33),
-            val_augmentation: bool=True,
-            crop_strategy: str="centroid",
-            sync_hflip=False,
+            use_hflip_augment: bool = True,
+            shared_transform: bool = True,
+            crop_height: typing.Union[int, typing.AnyStr] = "auto",
+            crop_scale: tuple = (0.2, 1),
+            crop_ratio: tuple = (0.75, 1.33),
+            crop_strategy: str = "centroid",
+            sync_hflip = False,
             *args: typing.Any,
             **kwargs: typing.Any,
     ):
@@ -244,19 +252,20 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
         self.jitter_strength = jitter_strength
         self.valid_split_ratio = valid_split_ratio
         self.hdf5_path = hdf5_path
-        self.keypoints_mode = keypoints_mode
         self.tuple_length = tuple_length
         self.frame_offset = frame_offset
         self.tuple_offset = tuple_offset
+        self.keep_only_frames_with_valid_kpts = keep_only_frames_with_valid_kpts
         self.num_workers = num_workers
         self.batch_size = batch_size
         self.split_seed = split_seed if split_seed is not None else 1337  # keep this static between runs
         self.pin_memory = pin_memory
         self.drop_last = drop_last
+        self.use_hflip_augment = use_hflip_augment
         self.shared_transform = shared_transform
+        self.crop_height = crop_height
         self.crop_scale = crop_scale
         self.crop_ratio = crop_ratio
-        self.val_augmentation= val_augmentation
         self.crop_strategy=crop_strategy
         self.sync_hflip=sync_hflip
         # create temp dataset to get total sequence/sample count
@@ -266,6 +275,7 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
             tuple_length=self.tuple_length,
             frame_offset=self.frame_offset,
             tuple_offset=self.tuple_offset,
+            keep_only_frames_with_valid_kpts=self.keep_only_frames_with_valid_kpts,
         )
         # we do the split in a 2nd pass and re-parse the subsets
         # ...caching will be 2x longer, but it's the easiest solution, and it costs ~5 minutes once
@@ -284,37 +294,38 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
         assert len(np.intersect1d(self.valid_seq_subset, self.train_seq_subset)) == 0
         assert len(np.intersect1d(self.valid_sample_count, self.train_sample_count)) == 0
         assert self.train_sample_count > 0 and self.valid_sample_count > 0
+        self.train_dataset = None  # will be initialized once setup is called
+        self.val_dataset = None
 
-    def setup(self, stage= None):
+    def setup(self, stage=None):
         if self.val_transforms is None:
             self.val_transforms = self.val_transform()
         if self.train_transforms is None:
             self.train_transforms = self.train_transform()
-
         self.val_dataset = ObjectronHDF5FrameTupleParser(
-                hdf5_path=self.hdf5_path,
-                seq_subset=self.valid_seq_subset,
-                tuple_length=self.tuple_length,
-                frame_offset=self.frame_offset,
-                tuple_offset=self.tuple_offset,
-                _target_fields=["IMAGE", "CENTROID_2D_IM"],
-                _transforms=self.val_transforms,
-            )
-
+            hdf5_path=self.hdf5_path,
+            seq_subset=self.valid_seq_subset,
+            tuple_length=self.tuple_length,
+            frame_offset=self.frame_offset,
+            tuple_offset=self.tuple_offset,
+            keep_only_frames_with_valid_kpts=self.keep_only_frames_with_valid_kpts,
+            _target_fields=["IMAGE", "CENTROID_2D_IM"],
+            _transforms=self.val_transforms,
+        )
         self.train_dataset = ObjectronHDF5FrameTupleParser(
-                hdf5_path=self.hdf5_path,
-                seq_subset=self.train_seq_subset,
-                tuple_length=self.tuple_length,
-                frame_offset=self.frame_offset,
-                tuple_offset=self.tuple_offset,
-                _target_fields=["IMAGE", "CENTROID_2D_IM"],
-                _transforms=self.train_transforms,
-            )
+            hdf5_path=self.hdf5_path,
+            seq_subset=self.train_seq_subset,
+            tuple_length=self.tuple_length,
+            frame_offset=self.frame_offset,
+            tuple_offset=self.tuple_offset,
+            keep_only_frames_with_valid_kpts=self.keep_only_frames_with_valid_kpts,
+            _target_fields=["IMAGE", "CENTROID_2D_IM"],
+            _transforms=self.train_transforms,
+        )
 
     def train_dataloader(self, evaluation=False) -> torch.utils.data.DataLoader:
-        if evaluation: #We don't want transformations for finding nearest neighbors.
+        if evaluation:  # We don't want transformations for finding nearest neighbors.
             self.train_dataset.transforms = self.val_transforms
-
         return torch.utils.data.DataLoader(
             self.train_dataset,
             batch_size=self.batch_size,
@@ -335,70 +346,68 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
         )
 
     def train_transform(self):
-        if self.keypoints_mode:
-            return selfsupmotion.data.objectron.data_transforms.SimSiamFramePairTrainDataTransform(
-                crop_height="auto",
-                input_height=self.image_size,
-                gaussian_blur=self.gaussian_blur,
-                jitter_strength=self.jitter_strength,
-                crop_scale=self.crop_scale,
-                crop_ratio=self.crop_ratio,
-                use_hflip_augment=False,  # @@@@@ bad for keypoints?
-                shared_transform=self.shared_transform,
-                crop_strategy=self.crop_strategy,
-                sync_hflip=self.sync_hflip
-            )
-        else:
-            return selfsupmotion.data.objectron.data_transforms.SimSiamFramePairTrainDataTransform(
-                # @@@ TODO: is auto-cropping best here as well?
-                input_height=self.image_size,
-                gaussian_blur=self.gaussian_blur,
-                jitter_strength=self.jitter_strength,
-                crop_scale=self.crop_scale,
-                crop_ratio=self.crop_ratio,
-                shared_transform=self.shared_transform,
-                crop_strategy=self.crop_strategy,
-                sync_hflip=self.sync_hflip
-            )
+        return selfsupmotion.data.objectron.data_transforms.SimSiamFramePairTrainDataTransform(
+            crop_height=self.crop_height,
+            input_height=self.image_size,
+            gaussian_blur=self.gaussian_blur,
+            jitter_strength=self.jitter_strength,
+            crop_scale=self.crop_scale,
+            crop_ratio=self.crop_ratio,
+            use_hflip_augment=self.use_hflip_augment,
+            shared_transform=self.shared_transform,
+            crop_strategy=self.crop_strategy,
+            sync_hflip=self.sync_hflip
+        )
 
     def val_transform(self):
-        if self.keypoints_mode:
-            return selfsupmotion.data.objectron.data_transforms.SimSiamFramePairEvalDataTransform(
-                crop_height="auto",
-                input_height=self.image_size,
-                gaussian_blur=self.gaussian_blur,
-                jitter_strength=self.jitter_strength,
-                crop_scale=(0.8, 1.0),
-                crop_ratio=(0.75, 1.3333),
-                use_hflip_augment=False,  # @@@@@ bad for keypoints?
-            )
-        else:
-            return selfsupmotion.data.objectron.data_transforms.SimSiamFramePairEvalDataTransform(
-                input_height=self.image_size,
-                gaussian_blur=self.gaussian_blur,
-                jitter_strength=self.jitter_strength,
-                augmentation=self.val_augmentation,
-                crop_strategy=self.crop_strategy
-            )
+        return selfsupmotion.data.objectron.data_transforms.SimSiamFramePairEvalDataTransform(
+            crop_height=self.crop_height,
+            input_height=self.image_size,
+            gaussian_blur=self.gaussian_blur,
+            jitter_strength=self.jitter_strength,
+            crop_scale=self.crop_scale,
+            crop_ratio=self.crop_ratio,
+            use_hflip_augment=self.use_hflip_augment,
+            shared_transform=self.shared_transform,
+            crop_strategy=self.crop_strategy,
+            sync_hflip=self.sync_hflip,
+            augmentation=False,
+        )
 
 
 if __name__ == "__main__":
     data_path = "/wdata/datasets/objectron/"
     hdf5_path = data_path + "extract_s5_raw.hdf5"
+    config_path = "/home/perf6/dev/selfsupmotion/examples/local/config-kpts.yaml"
     display_keypoints = True
-
     batch_size = 1
     max_iters = 50
+
+    import yaml
+    with open(config_path, "r") as stream:
+        hyper_params = yaml.load(stream, Loader=yaml.FullLoader)
+
     dm = ObjectronFramePairDataModule(
         hdf5_path=hdf5_path,
-        keypoints_mode=display_keypoints,
-       # frame_offset=2,
+        tuple_length=hyper_params.get("tuple_length"),
+        frame_offset=hyper_params.get("frame_offset"),
+        tuple_offset=hyper_params.get("tuple_offset"),
+        keep_only_frames_with_valid_kpts=hyper_params.get("keep_only_frames_with_valid_kpts"),
+        input_height=hyper_params.get("input_height"),
+        gaussian_blur=hyper_params.get("gaussian_blur"),
+        jitter_strength=hyper_params.get("jitter_strength"),
         batch_size=batch_size,
-       # num_workers=2,
         num_workers=0,
+        use_hflip_augment=hyper_params.get("use_hflip_augment"),
+        shared_transform=hyper_params.get("shared_transform"),
+        crop_height=hyper_params.get("crop_height"),
+        crop_scale=(hyper_params.get("crop_scale_min"), hyper_params.get("crop_scale_max")),
+        crop_ratio=(hyper_params.get("crop_ratio_min"), hyper_params.get("crop_ratio_max")),
+        crop_strategy=hyper_params.get("crop_strategy"),
+        sync_hflip=hyper_params.get("sync_hflip"),
     )
     assert dm.train_sample_count > 0
-
+    dm.setup()
     loader = dm.train_dataloader()
     norm_std = np.asarray([0.229, 0.224, 0.225]).reshape((1, 1, 3))
     norm_mean = np.asarray([0.485, 0.456, 0.406]).reshape((1, 1, 3))

@@ -1,4 +1,4 @@
-batch_size: 96
+batch_size: 128
 optimizer: sgd
 learning_rate: 0.03
 weight_decay: 0.0005
@@ -11,12 +11,14 @@ feat_dim: 128
 input_height: 224
 tuple_length: 2
 frame_offset: 1
-tuple_offset: 2
-patience: 5
-max_epoch: 100
+tuple_offset: 1
+patience: 3
+warmup_epochs: 2
+max_epoch: 15
 image_size: 224
-exp_name: temp
+exp_name: pretrain_224_tmp
 gpus: 1
-num_workers: 2
+num_workers: 4
 seed: None
-early_stop_metric: val_accuracy
+precision: 16
+early_stop_metric: val_loss

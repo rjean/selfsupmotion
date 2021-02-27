@@ -51,7 +51,7 @@ class SimSiamFramePairTrainDataTransform(object):
                 base_pts = np.asarray([pt for pt in sample["POINTS"][0]])
                 real_tl = (base_pts[:, 0].min(), base_pts[:, 1].min())
                 real_br = (base_pts[:, 0].max(), base_pts[:, 1].max())
-                max_size = max(real_br[0] - real_tl[0], real_br[1] - real_tl[1]) * 1.2  # 20% extra
+                max_size = max(real_br[0] - real_tl[0], real_br[1] - real_tl[1]) * 1.1  # 10% extra
                 tl = (int(round(sample["CENTROID_2D_IM"][0, 0] - max_size / 2)),
                       int(round(sample["CENTROID_2D_IM"][0, 1] - max_size / 2)))
                 br = (int(round(tl[0] + max_size)), int(round(tl[1] + max_size)))
@@ -62,8 +62,11 @@ class SimSiamFramePairTrainDataTransform(object):
             raise ValueError(f"Invalid cropping stragegy: {self.crop_strategy}")
         # get crops one at a time for all frames in the seq, for all seqs in the minibatch
         if tl==br: #should not happen!
-            print(f"Annotation error on {sample['UID']}, moving on!")
-            tl = br[0]-64, br[1]-64 #Arbirary crop, just to avoid crashing!
+            print(f"Annotation error on {sample['UID']}, moving on w/ hard-sized crop!")
+            new_crop_height = 360
+            tl = (int(round(sample["CENTROID_2D_IM"][0, 0] - new_crop_height / 2)),
+                  int(round(sample["CENTROID_2D_IM"][0, 1] - new_crop_height / 2)))
+            br = (tl[0] + new_crop_height, tl[1] + new_crop_height)
         output_crop_seq = []
         output_keypoints = []
         for frame_idx, (frame, kpts) in enumerate(zip(sample["IMAGE"], sample["POINTS"])):
@@ -114,6 +117,8 @@ class SimSiamFramePairTrainDataTransform(object):
         self.enable_augmentation= augmentation
         self.crop_strategy = crop_strategy
         self.sync_hflip=sync_hflip
+        self.crop_scale = crop_scale
+        self.crop_ratio = crop_ratio
 
         bbox_transforms = [
                 albumentations.LongestMaxSize(
@@ -132,13 +137,13 @@ class SimSiamFramePairTrainDataTransform(object):
                 albumentations.RandomResizedCrop(
                     height=self.input_height,
                     width=self.input_height,
-                    scale=crop_scale,
-                    ratio=crop_ratio,
+                    scale=self.crop_scale,
+                    ratio=self.crop_ratio,
                 ),
             ]
             if self.crop_strategy=="bbox":
                 augment_transforms = bbox_transforms + augment_transforms
-            if use_hflip_augment:
+            if self.use_hflip_augment:
                 augment_transforms.append(albumentations.HorizontalFlip(p=0.5))
             augment_transforms.extend([
                 albumentations.ColorJitter(
