@@ -176,6 +176,7 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger, tbx_logger):
             crop_ratio=(hyper_params.get("crop_ratio_min"), hyper_params.get("crop_ratio_max")),
             crop_strategy=hyper_params.get("crop_strategy"),
             sync_hflip=hyper_params.get("sync_hflip"),
+            resort_keypoints=hyper_params.get("resort_keypoints"),
         )
         dm.setup()
 

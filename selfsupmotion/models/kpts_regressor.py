@@ -259,10 +259,15 @@ class KeypointsRegressor(pl.LightningModule):
             frame = frame.astype(np.uint8).copy()
             for pred_pt, tgt_pt in zip(preds[idx], targets[idx]):  # targets in green, preds in red
                 # assume targets are already in abs coords, and we must scale predictions
-                tgt_pt = (int(round(tgt_pt[0].item())), int(round(tgt_pt[1].item())))
+                tgt_pt = tgt_pt[0].item(), tgt_pt[1].item()
+                assert not np.isnan(tgt_pt[0]) and not np.isnan(tgt_pt[1])
+                tgt_pt = int(round(tgt_pt[0])), int(round(tgt_pt[1]))
+                pred_pt = pred_pt[0].item(), pred_pt[1].item()
+                if np.isnan(pred_pt[0]) or np.isnan(pred_pt[0]):
+                    pred_pt = (-1., -1.)  # override nans (no clue why they happen sometimes...)
+                pred_pt = int(round(pred_pt[0] * self.input_height)), int(round(pred_pt[1] * self.input_height))
+                frame = cv.arrowedLine(frame, tgt_pt, pred_pt, color=(242, 242, 34), thickness=1)
                 frame = cv.circle(frame, tgt_pt, radius=3, color=(127, 255, 112), thickness=-1)
-                pred_pt = (int(round(pred_pt[0].item() * self.input_height)),
-                           int(round(pred_pt[1].item() * self.input_height)))
                 frame = cv.circle(frame, pred_pt, radius=3, color=(255, 52, 52), thickness=-1)
             self._tbx_logger.experiment.add_image(
                 batch["UID"][idx], frame, self.trainer.global_step, dataformats="HWC")

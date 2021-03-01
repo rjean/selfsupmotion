@@ -1,4 +1,5 @@
 import hashlib
+import math
 import re
 import typing
 
@@ -19,6 +20,12 @@ def project_points(points, projection_matrix, view_matrix, width, height):
     pixels[:, 1] = ((1 + y) * 0.5) * height
     pixels = pixels.astype(int)
     return pixels
+
+
+def distance_between_point_and_plane(x1, y1, z1, a, b, c, d):
+    d = abs((a * x1 + b * y1 + c * z1 + d))
+    e = math.sqrt(a * a + b * b + c * c)
+    return d / e
 
 
 def get_params_hash(*args, **kwargs):

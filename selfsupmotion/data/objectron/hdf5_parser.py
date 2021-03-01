@@ -25,6 +25,7 @@ except ImportError:
 
 import selfsupmotion.data.objectron.data_transforms
 import selfsupmotion.data.objectron.sequence_parser
+import selfsupmotion.data.objectron.utils
 import selfsupmotion.data.utils
 
 
@@ -122,6 +123,7 @@ class ObjectronHDF5FrameTupleParser(ObjectronHDF5SequenceParser):
             keep_only_frames_with_valid_kpts: bool = False,  # set to true when training on kpts
             _target_fields: typing.Optional[typing.List[typing.AnyStr]] = None,
             _transforms: typing.Optional[typing.Any] = None,
+            _resort_keypoints: bool = False,
     ):
         # also make a local var for the archive name, as we don't want to overwrite cache for each
         hdf5_name = os.path.basename(hdf5_path)  # yes, it's normal that this looks "unused" (it's used)
@@ -143,6 +145,7 @@ class ObjectronHDF5FrameTupleParser(ObjectronHDF5SequenceParser):
             self.frame_pair_map = self._fetch_tuple_metadata()
             with open(cache_path, "wb") as fd:
                 pickle.dump(self.frame_pair_map, fd)
+        self.resort_keypoints = _resort_keypoints
 
     def _fetch_tuple_metadata(self):
         tuple_map = {}
@@ -213,6 +216,9 @@ class ObjectronHDF5FrameTupleParser(ObjectronHDF5SequenceParser):
         }
         if self.transforms is not None:
             sample = self.transforms(sample)
+        # resort after transforms so flips can be used
+        if self.resort_keypoints:
+            sample["sorting_good"] = selfsupmotion.data.objectron.utils.sort_sample_keypoints(sample)
         return sample
 
 
@@ -243,6 +249,7 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
             crop_ratio: tuple = (0.75, 1.33),
             crop_strategy: str = "centroid",
             sync_hflip = False,
+            resort_keypoints: bool = False,
             *args: typing.Any,
             **kwargs: typing.Any,
     ):
@@ -267,8 +274,9 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
         self.crop_height = crop_height
         self.crop_scale = crop_scale
         self.crop_ratio = crop_ratio
-        self.crop_strategy=crop_strategy
-        self.sync_hflip=sync_hflip
+        self.crop_strategy = crop_strategy
+        self.sync_hflip = sync_hflip
+        self.resort_keypoints = resort_keypoints
         # create temp dataset to get total sequence/sample count
         dataset = ObjectronHDF5FrameTupleParser(
             hdf5_path=self.hdf5_path,
@@ -304,7 +312,9 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
         if self.train_transforms is None:
             self.train_transforms = self.train_transform()
         target_fields = [
-            "IMAGE", "CENTROID_2D_IM", "POINT_3D", "PROJECTION_MATRIX", "VIEW_MATRIX",
+            "IMAGE", "CENTROID_2D_IM", "POINT_3D",
+            "PROJECTION_MATRIX", "VIEW_MATRIX",
+            "PLANE_CENTER", "PLANE_NORMAL",
         ]
         self.val_dataset = ObjectronHDF5FrameTupleParser(
             hdf5_path=self.hdf5_path,
@@ -315,6 +325,7 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
             keep_only_frames_with_valid_kpts=self.keep_only_frames_with_valid_kpts,
             _target_fields=target_fields,
             _transforms=self.val_transforms,
+            _resort_keypoints=self.resort_keypoints,
         )
         self.train_dataset = ObjectronHDF5FrameTupleParser(
             hdf5_path=self.hdf5_path,
@@ -325,6 +336,7 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
             keep_only_frames_with_valid_kpts=self.keep_only_frames_with_valid_kpts,
             _target_fields=target_fields,
             _transforms=self.train_transforms,
+            _resort_keypoints=self.resort_keypoints,
         )
 
     def train_dataloader(self, evaluation=False) -> torch.utils.data.DataLoader:
@@ -392,6 +404,10 @@ if __name__ == "__main__":
     with open(config_path, "r") as stream:
         hyper_params = yaml.load(stream, Loader=yaml.FullLoader)
 
+    import selfsupmotion.utils.reproducibility_utils
+    hyper_params["seed"] = 0
+    selfsupmotion.utils.reproducibility_utils.set_seed(hyper_params["seed"])
+
     dm = ObjectronFramePairDataModule(
         hdf5_path=hdf5_path,
         tuple_length=hyper_params.get("tuple_length"),
@@ -410,6 +426,7 @@ if __name__ == "__main__":
         crop_ratio=(hyper_params.get("crop_ratio_min"), hyper_params.get("crop_ratio_max")),
         crop_strategy=hyper_params.get("crop_strategy"),
         sync_hflip=hyper_params.get("sync_hflip"),
+        resort_keypoints=hyper_params.get("resort_keypoints"),
     )
     assert dm.train_sample_count > 0
     dm.setup()
@@ -423,13 +440,16 @@ if __name__ == "__main__":
     for batch in tqdm.tqdm(loader, total=len(loader)):
         if display:
             display_frames = []
-            for frame_idx, (frame, pts) in enumerate(zip(batch["OBJ_CROPS"], batch["POINTS"])):
+            for frame_idx, (frame, pts, pts_3d) in enumerate(zip(batch["OBJ_CROPS"], batch["POINTS"], batch["POINT_3D"])):
                 # de-normalize and ready image for opencv display to show the result of transforms
                 frame = (((frame.squeeze(0).numpy().transpose((1, 2, 0)) * norm_std) + norm_mean) * 255).astype(np.uint8)
-                for pt in pts.view(-1, 2):
+                for pt_idx, pt in enumerate(pts.view(-1, 2)):
                     pt = (int(round(pt[0].item())), int(round(pt[1].item())))
-                    frame = cv.circle(frame.copy(), pt, radius=3, color=(127, 255, 112), thickness=-1)
+                    color = (32, 224, 32) if pt_idx == 0 else (32, 32, 224)
+                    frame = cv.circle(frame.copy(), pt, radius=3, color=color, thickness=-1)
+                    cv.putText(frame, f"{pt_idx}", pt, cv.FONT_HERSHEY_SIMPLEX, 0.5, color)
                 display_frames.append(frame)
+            print(f"sorting_good = {batch['sorting_good']}")
             cv.imshow(
                 f"frames",
                 cv.resize(
