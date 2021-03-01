@@ -13,6 +13,7 @@ backbone: resnet50
 first_conv: True
 maxpool1: True
 dropout: 0
+use_final_pool: True
 exclude_bn_bias: False
 input_height: 224
 tuple_length: 1

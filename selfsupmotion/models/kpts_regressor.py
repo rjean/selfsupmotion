@@ -37,6 +37,7 @@ class KeypointsRegressor(pl.LightningModule):
         self.maxpool1 = hyper_params.get("maxpool1")
         self.dropout = hyper_params.get("dropout")
         self.input_height = hyper_params.get("input_height")
+        self.use_final_pool = hyper_params.get("use_final_pool")
 
         self.optim = hyper_params.get("optimizer")
         self.lars_wrapper = hyper_params.get("lars_wrapper")
@@ -84,21 +85,38 @@ class KeypointsRegressor(pl.LightningModule):
         else:
             backbone = resnet50
 
-        self.encoder = backbone(
-            first_conv=self.first_conv,
-            maxpool1=self.maxpool1,
-            return_all_feature_maps=False,
-        )
-        if self.dropout is not None and self.dropout > 0:  # @@@@ experiment with this
-            self.decoder = torch.nn.Sequential(
-                torch.nn.Dropout(p=self.dropout),
-                torch.nn.Linear(2048, 18),
+        if self.use_final_pool:
+            self.encoder = backbone(
+                first_conv=self.first_conv,
+                maxpool1=self.maxpool1,
+                return_all_feature_maps=False,
             )
+            if self.dropout is not None and self.dropout > 0:  # @@@@ experiment with this
+                self.decoder = torch.nn.Sequential(
+                    torch.nn.Dropout(p=self.dropout),
+                    torch.nn.Linear(2048, 18),
+                )
+            else:
+                self.decoder = torch.nn.Linear(2048, 18)
         else:
-            self.decoder = torch.nn.Linear(2048, 18)
+            self.encoder = backbone(
+                first_conv=self.first_conv,
+                maxpool1=self.maxpool1,
+                return_all_feature_maps=True,
+            )
+            if self.dropout is not None and self.dropout > 0:  # @@@@ experiment with this
+                self.decoder = torch.nn.Sequential(
+                    torch.nn.Dropout(p=self.dropout),
+                    torch.nn.Linear(7 * 7 * 2048, 18),
+                )
+            else:
+                self.decoder = torch.nn.Linear(7 * 7 * 2048, 18)
 
     def forward(self, x):
-        return self.decoder(self.encoder(x)[0])
+        if self.use_final_pool:
+            return self.decoder(self.encoder(x)[0])
+        else:
+            return self.decoder(torch.flatten(self.encoder(x)[-1], 1))
 
     def training_step(self, batch, batch_idx):
         # @@@@@@@@@@ ADD MAX LOSS SAT, should not be > 2 per kpt?
@@ -106,8 +124,7 @@ class KeypointsRegressor(pl.LightningModule):
         preds_stack, targets_stack = [], []
         # the loop below iterates for all frames in the frame tuple, but it should really just do one iter
         for img, pts in zip(batch["OBJ_CROPS"], batch["POINTS"]):
-            embd = self.encoder(img)[0]
-            preds = self.decoder(embd).view(pts.shape)
+            preds = self(img).view(pts.shape)
             preds_stack.append(preds.detach())
             targets_stack.append(pts)
             # todo: try w/ -height/2 offset to center around 0?
@@ -145,8 +162,7 @@ class KeypointsRegressor(pl.LightningModule):
         preds_stack, targets_stack = [], []
         # the loop below iterates for all frames in the frame tuple, but it should really just do one iter
         for img, pts in zip(batch["OBJ_CROPS"], batch["POINTS"]):
-            embd = self.encoder(img)[0]
-            preds = self.decoder(embd).view(pts.shape)
+            preds = self(img).view(pts.shape)
             preds_stack.append(preds.detach())
             targets_stack.append(pts)
             curr_loss = self.loss_fn(preds, pts / self.input_height)
