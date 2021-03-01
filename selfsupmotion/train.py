@@ -83,7 +83,7 @@ def train_impl(
         logger.info('no model found - starting training from scratch')
         resume_from_checkpoint = None
 
-    early_stopping = None
+    early_stopping, callbacks = None, []
     if hyper_params["early_stop_metric"] not in ["None", "none", "", None]:
         early_stopping = pl.callbacks.EarlyStopping(
             monitor=hyper_params["early_stop_metric"],
@@ -98,19 +98,14 @@ def train_impl(
             verbose=use_progress_bar,
             mode="auto",
         )
-        callbacks = [early_stopping, best_checkpoint_callback]
-    else:
-        callbacks = []
-
-    printer_callback = pl_bolts.callbacks.PrintTableMetricsCallback()
-    last_checkpoint_callback = pl.callbacks.ModelCheckpoint(
-        dirpath=output,
-        filename="last-{epoch}-{step}",
-        verbose=use_progress_bar,
-    )
-    callbacks = callbacks.extend([
-        printer_callback,
-        last_checkpoint_callback,
+        callbacks.extend([early_stopping, best_checkpoint_callback])
+    callbacks.extend([
+        pl_bolts.callbacks.PrintTableMetricsCallback(),
+        pl.callbacks.ModelCheckpoint(
+            dirpath=output,
+            filename="last-{epoch}-{step}",
+            verbose=use_progress_bar,
+        ),
     ])
 
     trainer = pl.Trainer(
