@@ -1,12 +1,12 @@
 .idea
 mlruns
 lightning_logs
+tensorboard
 output/
 # Ignore example outputs
 examples/*/output/
 datasets/
 examples/*/output*/
-
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
