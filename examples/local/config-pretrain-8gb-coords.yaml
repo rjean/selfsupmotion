@@ -1,4 +1,4 @@
-batch_size: 64
+batch_size: 48
 accumulate_grad_batches: 1 # For stock optimizer step
 #accumulate_grad_batches_custom: 8 # For custom optimizer step on SimSiam
 optimizer: sgd
@@ -31,9 +31,4 @@ crop_ratio_max: 1.33
 val_augmentation: False
 crop_strategy: bbox
 sync_hflip: True 
-#coords_channels: 2 #deprecated
-#coords: xy #deprecated
 coordconv: True
-#coordconv_centered: True
-#coordconv_normalized: True
-#coordconv_radius_channel: False

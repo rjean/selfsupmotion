@@ -14,6 +14,8 @@ from torchvision.models.shufflenetv2 import shufflenet_v2_x1_0
 #from pl_bolts.models.self_supervised.simsiam.models import SiameseArm
 from pl_bolts.optimizers.lars_scheduling import LARSWrapper
 
+from thelper.nn.coordconv import swap_coordconv_layers
+
 import torch.nn.functional as F 
 import torch.nn as nn
 from typing import Optional, Tuple
@@ -194,6 +196,8 @@ class SimSiam(pl.LightningModule):
 
         self.accumulate_grad_batches_custom = hyper_params.get("accumulate_grad_batches_custom",1)
 
+        self.coordconv = hyper_params.get("coordconv", False)
+
         self.init_model()
 
         # compute iters per epoch
@@ -239,6 +243,9 @@ class SimSiam(pl.LightningModule):
         else:
             raise ValueError(f"Unsupported backbone: {self.backbone}")
         
+        if self.coordconv:
+            backbone_network = swap_coordconv_layers(backbone_network)
+
         self.online_network = SiameseArm(
             backbone_network, input_dim=self.feature_dim, hidden_size=self.hidden_mlp, output_dim=self.feat_dim
         )
