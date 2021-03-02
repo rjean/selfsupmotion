@@ -1,5 +1,6 @@
 .idea
-mlruns
+mlruns/
+tensorboard/
 lightning_logs
 tensorboard
 output/

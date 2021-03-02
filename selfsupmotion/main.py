@@ -5,14 +5,14 @@ import logging
 import os
 import shutil
 import sys
-from pytorch_lightning.cluster_environments import torchelastic_environment
 import yaml
 
+import mlflow
 from yaml import load
 import pytorch_lightning as pl
-from pytorch_lightning.loggers import MLFlowLogger
+from pytorch_lightning.loggers import MLFlowLogger, TensorBoardLogger
 
-from selfsupmotion.train import train
+from selfsupmotion.train import train, load_mlflow, STAT_FILE_NAME
 from selfsupmotion.utils.hp_utils import check_and_log_hp
 from selfsupmotion.models.model_loader import load_model
 from selfsupmotion.utils.file_utils import rsync_folder
@@ -22,13 +22,8 @@ from selfsupmotion.utils.reproducibility_utils import set_seed
 import selfsupmotion.data.objectron.hdf5_parser
 import selfsupmotion.data.objectron.file_datamodule
 
-from torch.cuda.amp import autocast
-from torchvision.transforms.functional import resize
 
 logger = logging.getLogger(__name__)
-
-#import faulthandler
-#faulthandler.enable()
 
 
 def main():
@@ -41,7 +36,6 @@ def main():
     """
     parser = argparse.ArgumentParser()
     # __TODO__ check you need all the following CLI parameters
-    parser.add_argument('--log', help='log to this file (in addition to stdout/err)')
     parser.add_argument('--config',
                         help='config file with generic hyper-parameters,  such as optimizer, '
                              'batch_size, ... -  in yaml format')
@@ -61,7 +55,9 @@ def main():
     parser.add_argument('--embeddings', action='store_true',help="Skip training and generate embeddings for evaluation.")
     parser.add_argument('--embeddings-ckpt', type=str, default=None, help="Checkpoint to load when generating embeddings.")
     parser.add_argument("--dryrun", action="store_true", help="Dry-run by training on the validtion set. Use only to test loop code.")
-    
+
+    mlflow_save_dir = "./mlruns"  # make into arg?
+    tbx_save_dir = "./tensorboard"  # make into arg?
 
     parser = pl.Trainer.add_argparse_args(parser)
 
@@ -83,15 +79,6 @@ def main():
         data_dir = args.data
         output_dir = args.output
 
-    # will log to a file if provided (useful for orion on cluster)
-    if args.log is not None:
-        handler = logging.handlers.WatchedFileHandler(args.log)
-        formatter = logging.Formatter(logging.BASIC_FORMAT)
-        handler.setFormatter(formatter)
-        root = logging.getLogger()
-        root.setLevel(logging.INFO)
-        root.addHandler(handler)
-
     # to intercept any print statement:
     sys.stdout = LoggerWriter(logger.info)
     sys.stderr = LoggerWriter(logger.warning)
@@ -103,17 +90,46 @@ def main():
     output_dir = os.path.join(output_dir, exp_name)
     os.makedirs(output_dir, exist_ok=True)
     shutil.copyfile(args.config, os.path.join(output_dir, "config.backup"))
-    mlf_logger = MLFlowLogger(experiment_name=exp_name)
-    run(args, data_dir, output_dir, hyper_params, mlf_logger)
+    assert "output_dir" not in hyper_params
+    hyper_params["output_dir"] = output_dir
+    os.makedirs(mlflow_save_dir, exist_ok=True)
+    mlf_logger = MLFlowLogger(
+        experiment_name=exp_name,
+        save_dir=mlflow_save_dir,
+    )
+    if os.path.exists(os.path.join(output_dir, STAT_FILE_NAME)):
+        mlf_logger._run_id = load_mlflow(output_dir)
+        logger.warning(f"WILL CONTINUE LOGGING IN MLFLOW RUN ID: {mlf_logger._run_id}")
+    os.makedirs(tbx_save_dir, exist_ok=True)
+    tbx_logger = TensorBoardLogger(
+        save_dir=tbx_save_dir,
+        name=exp_name,
+        default_hp_metric=False,
+    )
+
+    log_path = os.path.join(output_dir, "console.log")
+    handler = logging.handlers.WatchedFileHandler(log_path)
+    formatter = logging.Formatter(logging.BASIC_FORMAT)
+    handler.setFormatter(formatter)
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    root.addHandler(handler)
+
+    mlflow.set_experiment(exp_name)
+    mlflow.start_run(run_id=mlf_logger.run_id)
+    run(args, data_dir, output_dir, hyper_params, mlf_logger, tbx_logger)
+    mlflow.end_run()
     if args.tmp_folder is not None:
         rsync_folder(output_dir + os.path.sep, args.output)
+
 
 def save_list_to_file(filename, string_list):
     with open(filename,"w") as f:
         for string in string_list:
             f.write(f"{string}\n")
 
-def run(args, data_dir, output_dir, hyper_params, mlf_logger):
+
+def run(args, data_dir, output_dir, hyper_params, mlf_logger, tbx_logger):
     """Setup and run the dataloaders, training loops, etc.
 
     Args:
@@ -122,6 +138,7 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger):
         output_dir (str): path to output folder
         hyper_params (dict): hyper parameters from the config file
         mlf_logger (obj): MLFlow logger callback.
+        tbx_logger (obj): TensorBoard logger callback.
     """
     # __TODO__ change the hparam that are used from the training algorithm
     # (and NOT the model - these will be specified in the model itself)
@@ -134,7 +151,7 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger):
         set_seed(hyper_params["seed"])
 
     if "precision" not in hyper_params:
-        hyper_params["precision"]=16
+        hyper_params["precision"] = 16
 
     log_exp_details(os.path.realpath(__file__), args)
 
@@ -143,20 +160,23 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger):
     if args.data_module=="hdf5":
         dm = selfsupmotion.data.objectron.hdf5_parser.ObjectronFramePairDataModule(
             hdf5_path=data_dir,
-            tuple_length=hyper_params.get("tuple_length", 2),
-            frame_offset=hyper_params.get("frame_offset", 1),
-            tuple_offset=hyper_params.get("tuple_offset", 2),
-            input_height=hyper_params.get("input_height", 224),
-            gaussian_blur=hyper_params.get("gaussian_blur", True),
-            jitter_strength=hyper_params.get("jitter_strength", 1.0),
-            batch_size=hyper_params["batch_size"],
-            num_workers=hyper_params["num_workers"],
-            shared_transform=hyper_params.get("shared_transform", True),
-            crop_scale=(hyper_params.get("crop_scale_min", 0.2),hyper_params.get("crop_scale_max", 1)),
-            crop_ratio=(hyper_params.get("crop_ratio_min", 0.75),hyper_params.get("crop_ratio_max", 1.33)),
-            val_augmentation=hyper_params.get("val_augmentation", True),
-            crop_strategy=hyper_params.get("crop_strategy", "centroid"),
-            sync_hflip=hyper_params.get("sync_hflip", False)
+            tuple_length=hyper_params.get("tuple_length"),
+            frame_offset=hyper_params.get("frame_offset"),
+            tuple_offset=hyper_params.get("tuple_offset"),
+            keep_only_frames_with_valid_kpts=hyper_params.get("keep_only_frames_with_valid_kpts"),
+            input_height=hyper_params.get("input_height"),
+            gaussian_blur=hyper_params.get("gaussian_blur"),
+            jitter_strength=hyper_params.get("jitter_strength"),
+            batch_size=hyper_params.get("batch_size"),
+            num_workers=hyper_params.get("num_workers"),
+            use_hflip_augment=hyper_params.get("use_hflip_augment"),
+            shared_transform=hyper_params.get("shared_transform"),
+            crop_height=hyper_params.get("crop_height"),
+            crop_scale=(hyper_params.get("crop_scale_min"), hyper_params.get("crop_scale_max")),
+            crop_ratio=(hyper_params.get("crop_ratio_min"), hyper_params.get("crop_ratio_max")),
+            crop_strategy=hyper_params.get("crop_strategy"),
+            sync_hflip=hyper_params.get("sync_hflip"),
+            resort_keypoints=hyper_params.get("resort_keypoints"),
         )
         dm.setup()
 
@@ -170,27 +190,20 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger):
     else:
         raise ValueError(f"Invalid datamodule specified on CLI : {args.data_module}")
 
-    if "num_samples" not in hyper_params:  
-        if hasattr(dm, "train_sample_count"):
-            hyper_params["num_samples"] = len(dm.train_dataset)
-        elif hasattr(dm, "train_dataset"):
+    if "num_samples" not in hyper_params:
+        if hasattr(dm, "train_dataset"):
             hyper_params["num_samples"] = len(dm.train_dataset)
         else:
             hyper_params["num_samples"] = None
 
     if "num_samples_valid" not in hyper_params:
-        if hasattr(dm, "valid_sample_count"):
-            hyper_params["num_samples_valid"] = len(dm.val_dataset)
-        elif hasattr(dm, "val_dataset"):
+        if hasattr(dm, "val_dataset"):
             hyper_params["num_samples_valid"] = len(dm.val_dataset)
         else:
             hyper_params["num_samples_valid"] = None
 
     if "early_stop_metric" not in hyper_params:
-        hyper_params["early_stop_metric"]="val_loss"
-
-
-
+        hyper_params["early_stop_metric"] = "val_loss"
     
     if args.embeddings:
         if args.embeddings_ckpt is None:
@@ -203,13 +216,18 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger):
         save_list_to_file(f"{output_dir}/train_sequences.txt", dm.train_dataset.seq_subset)
         save_list_to_file(f"{output_dir}/val_sequences.txt", dm.val_dataset.seq_subset)
         model = load_model(hyper_params)
-        train(model=model, optimizer=None, loss_fun=None, datamodule=dm,
-              patience=hyper_params['patience'], output=output_dir,
-              max_epoch=hyper_params['max_epoch'], use_progress_bar=not args.disable_progressbar,
-              start_from_scratch=args.start_from_scratch, mlf_logger=mlf_logger, precision=hyper_params["precision"],
-              early_stop_metric = hyper_params["early_stop_metric"],
-              accumulate_grad_batches = hyper_params.get("accumulate_grad_batches",1),
-              )
+        setattr(model, "_tbx_logger", tbx_logger)
+        setattr(model, "_mlf_logger", mlf_logger)
+        train(
+            model=model,
+            datamodule=dm,
+            output=output_dir,
+            use_progress_bar=not args.disable_progressbar,
+            start_from_scratch=args.start_from_scratch,
+            mlf_logger=mlf_logger,
+            tbx_logger=tbx_logger,
+            hyper_params=hyper_params,
+        )
 
 import torch
 from tqdm import tqdm
