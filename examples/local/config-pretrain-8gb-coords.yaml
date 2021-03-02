@@ -32,3 +32,5 @@ val_augmentation: False
 crop_strategy: bbox
 sync_hflip: True 
 coordconv: "first"
+jitter_strength: 0.5
+
