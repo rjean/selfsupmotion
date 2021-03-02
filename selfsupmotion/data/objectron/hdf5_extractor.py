@@ -59,7 +59,7 @@ if __name__ == "__main__":
                             continue  # bug in encoding (tfrecord readback goes boom)
                         if object == "bottle" and seq_idx in [666]:
                             continue  # bug in encoding (tfrecord readback goes boom)
-                        if object == "chair" and seq_idx in [436]:
+                        if object == "chair" and seq_idx in [436, 1281, 1341]:
                             continue  # bug in encoding (tfrecord readback goes boom)
                     elif objectron_subset == "test":
                         #if object == "bike" and seq_idx in [182]:
