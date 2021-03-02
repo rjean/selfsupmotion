@@ -31,4 +31,4 @@ crop_ratio_max: 1.33
 val_augmentation: False
 crop_strategy: bbox
 sync_hflip: True 
-coordconv: True
+coordconv: "first"

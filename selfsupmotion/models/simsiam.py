@@ -196,7 +196,7 @@ class SimSiam(pl.LightningModule):
 
         self.accumulate_grad_batches_custom = hyper_params.get("accumulate_grad_batches_custom",1)
 
-        self.coordconv = hyper_params.get("coordconv", False)
+        self.coordconv = hyper_params.get("coordconv", None)
 
         self.init_model()
 
@@ -243,8 +243,12 @@ class SimSiam(pl.LightningModule):
         else:
             raise ValueError(f"Unsupported backbone: {self.backbone}")
         
-        if self.coordconv:
+        if self.coordconv=="all":
             backbone_network = swap_coordconv_layers(backbone_network)
+        if self.coordconv=="first":
+            backbone_network.conv1=swap_coordconv_layers(backbone_network.conv1)
+            #backbone_network = 
+        
 
         self.online_network = SiameseArm(
             backbone_network, input_dim=self.feature_dim, hidden_size=self.hidden_mlp, output_dim=self.feat_dim
