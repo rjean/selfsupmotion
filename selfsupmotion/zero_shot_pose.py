@@ -9,9 +9,13 @@ import math
 import re
 import h5py
 import io
-#import multiprocessing
-from multiprocessing import Pool
-#multiprocessing.set_start_method('spawn')
+import multiprocessing
+#from multiprocessing import Pool
+from multiprocessing import get_context
+
+#multiprocessing.set_start_method('spawn') #Fork does not play nice with h5py!
+#Reference: https://pythonspeed.com/articles/python-multiprocessing/
+
 import numpy as np
 import cupy as cp
 import os
@@ -497,7 +501,8 @@ def get_iou_mp(idx:int #, symmetric=False, rescale=False,
     """
     
     global args, experiment, all_match_idxs
-    category = experiment.info_df.iloc[idx]["category"]
+    experiment.load_hdf5_file() #Just make sure the hdf5 file is not loader prior to forking.
+    category = experiment.get_category(idx, train=False)
 
     #all_match_idxs = find_match_idx(idx, embeddings, train_embeddings,0)
     match_idx=all_match_idxs[idx]
@@ -575,6 +580,10 @@ class ExperimentHandlerFile():
         except FileNotFoundError:
             print(f"Warning, unable to find {experiment}/train_sequences.txt.\n We will not be able to make sure there is no overlap between training and validation!")
 
+    def load_hdf5_file(self):
+        if self.hdf5_dataset is None:
+            self.hdf5_dataset = h5py.File('/home/raphael/datasets/objectron/extract_s5_raw.hdf5','r')
+
     def init_experiment(self, embeddings, info, train_embeddings, train_info):
         info_df = pd.DataFrame(info.T)
         train_info_df = pd.DataFrame(train_info.T)
@@ -583,7 +592,7 @@ class ExperimentHandlerFile():
         info_df = info_df.rename(columns=info_df_columns)
         if "hdf5" in train_info_df.iloc[0][1]:
             self.mode = "hdf5"
-            self.hdf5_dataset = h5py.File('/home/raphael/datasets/objectron/extract_s5_raw.hdf5','r')
+            self.hdf5_dataset = None
         else:
             self.mode = "raw"
         self.parse_info_df(info_df)
@@ -836,7 +845,7 @@ def main():
         raise ValueError("Training set ratio must be between 0 and 1!")
 
     all_match_idxs = find_all_match_idx(experiment.embeddings, experiment.train_embeddings, 0)
-    get_iou_mp(1)
+    #get_iou_mp(1)
     if args.subset_size < len(experiment.info_df):
         subset = random.sample(range(0,len(experiment.info_df)),args.subset_size)
     else:
@@ -855,7 +864,7 @@ def main():
         #params = (idx, args.symmetric, args.rescale)
         get_iou_params.append(idx)
     if not args.single_thread:
-        with Pool(6) as p:
+        with get_context("fork").Pool(4) as p: 
             results = list(tqdm(p.imap(get_iou_mp, get_iou_params), total=len(subset)))
     else:
         for idx in tqdm(get_iou_params):
