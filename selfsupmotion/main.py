@@ -19,6 +19,8 @@ from selfsupmotion.utils.file_utils import rsync_folder
 from selfsupmotion.utils.logging_utils import LoggerWriter, log_exp_details
 from selfsupmotion.utils.reproducibility_utils import set_seed
 
+from selfsupmotion.models.simsiam import save_mosaic #TODO: Place in some "utils" file.
+
 import selfsupmotion.data.objectron.hdf5_parser
 import selfsupmotion.data.objectron.file_datamodule
 
@@ -257,8 +259,10 @@ def generate_embeddings(args, model, datamodule, train=True, image_size=224):
     sequence_uids = []
     with torch.no_grad():
         batch_num = 0
-        for batch in local_progress:
-            images1 = batch["OBJ_CROPS"][0]
+        for batch_idx, batch in enumerate(local_progress):
+            images1 =  batch["OBJ_CROPS"][0]
+            if batch_idx==0:
+                save_mosaic("embeddings.png", images1)
             meta = batch["UID"]
             targets = batch["CAT_ID"]
             #images1, _, meta= data
