@@ -428,7 +428,7 @@ def find_all_match_idx(query_embeddings: np.ndarray, train_embeddings:np.ndarray
             query_end = query_start + query_chunk_size
             if query_end > len(query_embeddings):
                 query_end=len(query_embeddings)
-            cuda_query_embeddings = cp.array(query_embeddings[query_start:query_end])
+            cuda_query_embeddings = cp.asarray(query_embeddings[query_start:query_end])
 
             matches = []
             scores = []
@@ -439,16 +439,17 @@ def find_all_match_idx(query_embeddings: np.ndarray, train_embeddings:np.ndarray
                 train_end = train_start + train_chunk_size
                 if train_end > train_embeddings.shape[1]:
                     train_end=train_embeddings.shape[1]
-                cuda_train_embeddings = cp.array(train_embeddings[:,train_start:train_end])
+                cuda_train_embeddings = cp.asarray(train_embeddings[:,train_start:train_end])
                 similarity = cp.dot(cuda_query_embeddings,cuda_train_embeddings)
-                match_idx_chunk = cp.argmax(similarity,axis=1)
-                match_idx_chunk_score = np.take_along_axis(similarity.get(),np.expand_dims(match_idx_chunk.get(),axis=1),axis=1)
+                match_idx_chunk = cp.argmax(similarity,axis=1).get()
+                similarity=similarity.get()
+                match_idx_chunk_score = np.take_along_axis(similarity,np.expand_dims(match_idx_chunk,axis=1),axis=1)
                 match_idx_chunk+=train_start
-                best_match_idx_chunk = np.where(match_idx_chunk_score>best_match_idx_chunk_score, np.expand_dims(match_idx_chunk.get(), axis=1), best_match_idx_chunk).astype(np.uint64)
+                best_match_idx_chunk = np.where(match_idx_chunk_score>best_match_idx_chunk_score, np.expand_dims(match_idx_chunk, axis=1), best_match_idx_chunk).astype(np.uint64)
                 best_match_idx_chunk_score = np.where(match_idx_chunk_score>best_match_idx_chunk_score,match_idx_chunk_score,best_match_idx_chunk_score)
                 
                 #if use_cupy:
-                match_idx_chunk=match_idx_chunk.get()
+                #match_idx_chunk=match_idx_chunk.get()
 
                 matches.append(match_idx_chunk)
             match_idxs+=best_match_idx_chunk.squeeze().tolist()
