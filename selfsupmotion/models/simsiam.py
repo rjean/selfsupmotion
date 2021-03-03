@@ -24,6 +24,28 @@ import selfsupmotion.zero_shot_pose as zsp
 
 logger = logging.getLogger(__name__)
 
+class SyncFunction(torch.autograd.Function):
+
+    @staticmethod
+    def forward(ctx, tensor):
+        ctx.batch_size = tensor.shape[0]
+
+        gathered_tensor = [torch.zeros_like(tensor) for _ in range(torch.distributed.get_world_size())]
+
+        torch.distributed.all_gather(gathered_tensor, tensor)
+        gathered_tensor = torch.cat(gathered_tensor, 0)
+
+        return gathered_tensor
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        grad_input = grad_output.clone()
+        torch.distributed.all_reduce(grad_input, op=torch.distributed.ReduceOp.SUM, async_op=False)
+
+        idx_from = torch.distributed.get_rank() * ctx.batch_size
+        idx_to = (torch.distributed.get_rank() + 1) * ctx.batch_size
+        return grad_input[idx_from:idx_to]
+
 #Credit: https://github.com/PatrickHua/SimSiam
 class ProjectionMLP(nn.Module):
     def __init__(self, in_dim, hidden_dim=2048, out_dim=2048):
@@ -194,6 +216,9 @@ class SimSiam(pl.LightningModule):
         self.warmup_epochs = hyper_params.get("warmup_epochs", 10)
         self.max_epochs = hyper_params.get("max_epochs", 100)
 
+        self.loss_function = hyper_params.get("loss_function", "simsiam")
+        self.ntxent_temp = hyper_params.get("ntxent_temp", 0.5)
+
         self.accumulate_grad_batches_custom = hyper_params.get("accumulate_grad_batches_custom",1)
 
         self.coordconv = hyper_params.get("coordconv", None)
@@ -218,6 +243,9 @@ class SimSiam(pl.LightningModule):
         ])
 
         self.lr_schedule = np.concatenate((warmup_lr_schedule, cosine_lr_schedule))
+
+
+        self.nce = torch.nn.CrossEntropyLoss()
 
         #self.log("val_loss",0)
         #self.log("train_loss", 0)
@@ -268,6 +296,46 @@ class SimSiam(pl.LightningModule):
         y, _, _ = self.online_network(x)
         return y
 
+    def nt_xent_loss(self, out_1, out_2, temperature, eps=1e-6):
+        #https://github.com/PyTorchLightning/PyTorch-Lightning-Bolts/blob/master/pl_bolts/models/self_supervised/simclr/simclr_module.py#L64-L331
+        """
+            assume out_1 and out_2 are normalized
+            out_1: [batch_size, dim]
+            out_2: [batch_size, dim]
+        """
+        # gather representations in case of distributed training
+        # out_1_dist: [batch_size * world_size, dim]
+        # out_2_dist: [batch_size * world_size, dim]
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            out_1_dist = SyncFunction.apply(out_1)
+            out_2_dist = SyncFunction.apply(out_2)
+        else:
+            out_1_dist = out_1
+            out_2_dist = out_2
+
+        # out: [2 * batch_size, dim]
+        # out_dist: [2 * batch_size * world_size, dim]
+        out = torch.cat([out_1, out_2], dim=0)
+        out_dist = torch.cat([out_1_dist, out_2_dist], dim=0)
+
+        # cov and sim: [2 * batch_size, 2 * batch_size * world_size]
+        # neg: [2 * batch_size]
+        cov = torch.mm(out, out_dist.t().contiguous())
+        sim = torch.exp(cov / temperature)
+        neg = sim.sum(dim=-1)
+
+        # from each row, subtract e^1 to remove similarity measure for x1.x1
+        row_sub = torch.Tensor(neg.shape).fill_(math.e).to(neg.device)
+        neg = torch.clamp(neg - row_sub, min=eps)  # clamp for numerical stability
+
+        # Positive similarity, pos becomes [2 * batch_size]
+        pos = torch.exp(torch.sum(out_1 * out_2, dim=-1) / temperature)
+        pos = torch.cat([pos, pos], dim=0)
+
+        loss = -torch.log(pos / (neg + eps)).mean()
+
+        return loss
+
     def cosine_similarity(self, a, b, version="simplified"):
         if version == "original":
             b = b.detach()  # stop gradient of backbone + projection mlp
@@ -279,6 +347,22 @@ class SimSiam(pl.LightningModule):
         else:
             raise ValueError(f"Unsupported cosine similarity version: {version}")
         return sim
+
+    def compute_loss(self, img_1, img_2):
+         # Image 1 to image 2 loss
+        f1, z1, h1 = self.online_network(img_1)
+        f2, z2, h2 = self.online_network(img_2)
+        if self.loss_function=="simsiam":
+            loss = self.cosine_similarity(h1, z2) / 2 + self.cosine_similarity(h2, z1) / 2
+        elif self.loss_function=="ntxent": #Normalized temperature scaled cross entrolpy loss
+            #features1, labels1 = self.nt_xent_loss(z1)
+            #features2, labels2 = self.nt_xent_loss(z2)
+            z1 = F.normalize(z1, dim=-1)
+            z2 = F.normalize(z2, dim=-1)
+            loss = self.nt_xent_loss(z1, z2, self.ntxent_temp)
+        else:
+            raise ValueError(f"The {self.loss_function} loss is not supported!")
+        return loss, f1, f2
 
     def training_step(self, batch, batch_idx):
         assert len(batch["OBJ_CROPS"]) == 2
@@ -294,10 +378,8 @@ class SimSiam(pl.LightningModule):
 
         if self.cuda_train_features is not None:
             self.cuda_train_features = None #Free GPU memory
-        # Image 1 to image 2 loss
-        f1, z1, h1 = self.online_network(img_1)
-        f2, z2, h2 = self.online_network(img_2)
-        loss = self.cosine_similarity(h1, z2) / 2 + self.cosine_similarity(h2, z1) / 2
+       
+        loss, f1, f2 = self.compute_loss(img_1, img_2)
 
         base = batch_idx*self.batch_size
         train_features= F.normalize(f1.detach(), dim=1).cpu()
@@ -325,15 +407,16 @@ class SimSiam(pl.LightningModule):
         y = batch["CAT_ID"]
 
         # Image 1 to image 2 loss
-        f1, z1, h1 = self.online_network(img_1)
-        f2, z2, h2 = self.online_network(img_2)
+        #f1, z1, h1 = self.online_network(img_1)
+        #f2, z2, h2 = self.online_network(img_2)
 
-        loss = self.cosine_similarity(h1, z2) / 2 + self.cosine_similarity(h2, z1) / 2
+        #loss = self.cosine_similarity(h1, z2) / 2 + self.cosine_similarity(h2, z1) / 2
+        loss, f1, _ = self.compute_loss(img_1, img_2)
 
         self.valid_meta+=uid
         base = batch_idx*self.batch_size
 
-        valid_features = F.normalize(f1, dim=1).detach()
+        valid_features = F.normalize(f1, dim=1).detach().half()
 
         similarity = torch.mm(valid_features, self.cuda_train_features.T)
         targets_idx= torch.argmax(similarity,axis=1).cpu()
