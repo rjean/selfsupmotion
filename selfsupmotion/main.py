@@ -211,6 +211,9 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger, tbx_logger):
         if args.embeddings_ckpt is None:
             raise ValueError("Please manually provide the checkpoints using the --embeddings-ckpt argument")
         model = load_model(hyper_params, checkpoint=args.embeddings_ckpt)
+        ckpt = torch.load(args.embeddings_ckpt)
+        print(f"Loading from weights from {args.embeddings_ckpt}")
+        model.load_state_dict(ckpt["state_dict"])
         #model.load_from_checkpoint(args.embeddings_ckpt)
         generate_embeddings(args, model, datamodule=dm,train=True, image_size=hyper_params["image_size"])
         generate_embeddings(args, model, datamodule=dm,train=False, image_size=hyper_params["image_size"])
