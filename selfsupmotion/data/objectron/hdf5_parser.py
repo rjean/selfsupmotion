@@ -387,7 +387,7 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
             use_hflip_augment=self.use_hflip_augment,
             shared_transform=self.shared_transform,
             crop_strategy=self.crop_strategy,
-            sync_hflip=self.sync_hflip,
+            sync_hflip=False, #No flipping during validation!!!!
             augmentation=False,
         )
 
