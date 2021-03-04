@@ -139,9 +139,13 @@ class SiameseArm(nn.Module):
         input_dim: int = 2048,
         hidden_size: int = 4096,
         output_dim: int = 256,
+        predictor_input_dim: Optional[int] = None,
         hua_mlp = True,
     ) -> None:
         super().__init__()
+
+        if predictor_input_dim is None: #By default, the predictor that the projector output as a input.
+            predictor_input_dim = output_dim
 
         if encoder is None:
             raise ValueError("Please provide an encoder.")
@@ -152,7 +156,7 @@ class SiameseArm(nn.Module):
         if hua_mlp: #Using Patrick Hua interpretation of SimSiam.
             #Will use an additional hidden layer. Linear layer will have bias.
             self.projector = ProjectionMLP(input_dim, output_dim, output_dim)
-            self.predictor = PredictionMLP(output_dim, hidden_size, output_dim)
+            self.predictor = PredictionMLP(predictor_input_dim, hidden_size, output_dim)
         else:       #Pytorch Lighting interepreation of SimSiam
             self.projector = MLP(input_dim, hidden_size, output_dim)
             self.predictor = MLP(output_dim, hidden_size, output_dim)
@@ -278,8 +282,11 @@ class SimSiam(pl.LightningModule):
             #backbone_network = 
         
         if self.loss_function=="cyclic":
-            #Use 2 input predictor
-            raise NotImplementedError("TODO")
+            #Use 2 stacked inputs for the predictor
+            self.online_network = SiameseArm(
+                backbone_network, input_dim=self.feature_dim, hidden_size=self.hidden_mlp, 
+                output_dim=self.feat_dim, predictor_input_dim=self.feat_dim*2
+            )
         else:
             #All other methods work on pairs!
             self.online_network = SiameseArm(
@@ -372,24 +379,27 @@ class SimSiam(pl.LightningModule):
         elif self.loss_function=="cyclic":
             assert len(crops)==3, "Only triplets are supported for the Cyclic Loss"
             img_1, img_2, img_3 = crops
-            f1 = self.online_network.encoder(img_1)
+            f1 = self.online_network.encoder(img_1)[0]
             z1 = self.online_network.projector(f1)
-            h1 = self.online_network.predictor(z1)
-            f2 = self.online_network.encoder(img_2)
+            #h1 = self.online_network.predictor(z1)
+            f2 = self.online_network.encoder(img_2)[0]
             z2 = self.online_network.projector(f2)
-            h2 = self.online_network.predictor(z2)
-            f3 = self.online_network.encoder(img_3)
+            #h2 = self.online_network.predictor(z2)
+            f3 = self.online_network.encoder(img_3)[0]
             z3 = self.online_network.projector(f3)
-            h3 = self.online_network.predictor(z3)
-
-            f2, z2, h2 = self.online_network(img_2)
-            loss = self.cosine_similarity(h1, z2) / 2 + self.cosine_similarity(h2, z1) / 2
+            #h3 = self.online_network.predictor(z3)
+            #self.cosine_similarity(predicted, real)
+            z1z2 = torch.hstack([z1,z2])
+            z3z2 = torch.hstack([z3,z2])
+            z3_pred = self.online_network.predictor(z1z2)
+            z1_pred = self.online_network.predictor(z3z2)
+            loss = self.cosine_similarity(z1_pred, z1) / 2 + self.cosine_similarity(z3_pred, z3) / 2
         else:
             raise ValueError(f"The {self.loss_function} loss is not supported!")
         return loss, f1, f2
 
     def training_step(self, batch, batch_idx):
-        assert len(batch["OBJ_CROPS"]) == 2
+        #assert len(batch["OBJ_CROPS"]) == 2
         crops = batch["OBJ_CROPS"]
 
         if batch_idx==0:
@@ -418,7 +428,7 @@ class SimSiam(pl.LightningModule):
         return loss
 
     def validation_step(self, batch, batch_idx):
-        assert len(batch["OBJ_CROPS"]) == 2
+        #assert len(batch["OBJ_CROPS"]) == 2
         crops = batch["OBJ_CROPS"]
 
         if batch_idx==0:
