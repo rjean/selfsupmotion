@@ -360,6 +360,10 @@ class SimSiam(pl.LightningModule):
             z1 = F.normalize(z1, dim=-1)
             z2 = F.normalize(z2, dim=-1)
             loss = self.nt_xent_loss(z1, z2, self.ntxent_temp)
+        elif self.loss_function=="cyclic":
+            z1p = self.online_network.predictor(h2)
+            z2p = self.online_network.predictor(h1)
+            loss = self.cosine_similarity(z1, z1p) / 2 + self.cosine_similarity(z2, z2p) / 2
         else:
             raise ValueError(f"The {self.loss_function} loss is not supported!")
         return loss, f1, f2
