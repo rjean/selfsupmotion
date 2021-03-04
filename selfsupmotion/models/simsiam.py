@@ -277,10 +277,14 @@ class SimSiam(pl.LightningModule):
             backbone_network.conv1=swap_coordconv_layers(backbone_network.conv1)
             #backbone_network = 
         
-
-        self.online_network = SiameseArm(
-            backbone_network, input_dim=self.feature_dim, hidden_size=self.hidden_mlp, output_dim=self.feat_dim
-        )
+        if self.loss_function=="cyclic":
+            #Use 2 input predictor
+            raise NotImplementedError("TODO")
+        else:
+            #All other methods work on pairs!
+            self.online_network = SiameseArm(
+                backbone_network, input_dim=self.feature_dim, hidden_size=self.hidden_mlp, output_dim=self.feat_dim
+            )
         #max_batch = math.ceil(self.num_samples/self.batch_size)
         encoder, projector = self.online_network.encoder, self.online_network.projector
         
@@ -348,34 +352,50 @@ class SimSiam(pl.LightningModule):
             raise ValueError(f"Unsupported cosine similarity version: {version}")
         return sim
 
-    def compute_loss(self, img_1, img_2):
+    def compute_loss(self, crops):
          # Image 1 to image 2 loss
-        f1, z1, h1 = self.online_network(img_1)
-        f2, z2, h2 = self.online_network(img_2)
+        
         if self.loss_function=="simsiam":
+            assert len(crops)==2, "Simsiam only works with object pairs"
+            img_1, img_2 = crops
+            f1, z1, h1 = self.online_network(img_1)
+            f2, z2, h2 = self.online_network(img_2)
             loss = self.cosine_similarity(h1, z2) / 2 + self.cosine_similarity(h2, z1) / 2
         elif self.loss_function=="ntxent": #Normalized temperature scaled cross entrolpy loss
-            #features1, labels1 = self.nt_xent_loss(z1)
-            #features2, labels2 = self.nt_xent_loss(z2)
+            assert len(crops)==2, "Negative Cross Entropy Loss only works with object pairs"
+            img_1, img_2 = crops
+            f1, z1, h1 = self.online_network(img_1)
+            f2, z2, h2 = self.online_network(img_2)
             z1 = F.normalize(z1, dim=-1)
             z2 = F.normalize(z2, dim=-1)
             loss = self.nt_xent_loss(z1, z2, self.ntxent_temp)
         elif self.loss_function=="cyclic":
-            z1p = self.online_network.predictor(h2)
-            z2p = self.online_network.predictor(h1)
-            loss = self.cosine_similarity(z1, z1p) / 2 + self.cosine_similarity(z2, z2p) / 2
+            assert len(crops)==3, "Only triplets are supported for the Cyclic Loss"
+            img_1, img_2, img_3 = crops
+            f1 = self.online_network.encoder(img_1)
+            z1 = self.online_network.projector(f1)
+            h1 = self.online_network.predictor(z1)
+            f2 = self.online_network.encoder(img_2)
+            z2 = self.online_network.projector(f2)
+            h2 = self.online_network.predictor(z2)
+            f3 = self.online_network.encoder(img_3)
+            z3 = self.online_network.projector(f3)
+            h3 = self.online_network.predictor(z3)
+
+            f2, z2, h2 = self.online_network(img_2)
+            loss = self.cosine_similarity(h1, z2) / 2 + self.cosine_similarity(h2, z1) / 2
         else:
             raise ValueError(f"The {self.loss_function} loss is not supported!")
         return loss, f1, f2
 
     def training_step(self, batch, batch_idx):
         assert len(batch["OBJ_CROPS"]) == 2
-        img_1, img_2 = batch["OBJ_CROPS"]
+        crops = batch["OBJ_CROPS"]
 
         if batch_idx==0:
-            save_mosaic("img_1_train.jpg", img_1)
-            save_mosaic("img_2_train.jpg", img_2)
-            
+            for i, crop in enumerate(crops):
+                save_mosaic(f"img_{i}_train.jpg", crop)
+        
         #assert img_1.shape==torch.Size([32, 3, 224, 224])
         uid = batch["UID"]
         y = batch["CAT_ID"]
@@ -383,7 +403,7 @@ class SimSiam(pl.LightningModule):
         if self.cuda_train_features is not None:
             self.cuda_train_features = None #Free GPU memory
        
-        loss, f1, f2 = self.compute_loss(img_1, img_2)
+        loss, f1, f2 = self.compute_loss(crops)
 
         base = batch_idx*self.batch_size
         train_features= F.normalize(f1.detach(), dim=1).cpu()
@@ -399,11 +419,11 @@ class SimSiam(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         assert len(batch["OBJ_CROPS"]) == 2
-        img_1, img_2 = batch["OBJ_CROPS"]
+        crops = batch["OBJ_CROPS"]
 
         if batch_idx==0:
-            save_mosaic("img_1_val.jpg", img_1)
-            save_mosaic("img_2_val.jpg", img_2)
+            for i, crop in enumerate(crops):
+                save_mosaic(f"img_{i}_train.jpg", crop)
             if self.cuda_train_features is None: #Transfer to GPU once.
                 self.cuda_train_features = self.train_features.half().cuda()
 
@@ -415,7 +435,7 @@ class SimSiam(pl.LightningModule):
         #f2, z2, h2 = self.online_network(img_2)
 
         #loss = self.cosine_similarity(h1, z2) / 2 + self.cosine_similarity(h2, z1) / 2
-        loss, f1, _ = self.compute_loss(img_1, img_2)
+        loss, f1, _ = self.compute_loss(crops)
 
         self.valid_meta+=uid
         base = batch_idx*self.batch_size
@@ -428,7 +448,7 @@ class SimSiam(pl.LightningModule):
         match_count = (neighbor_targets==y.cpu()).sum()
         accuracy = match_count/len(neighbor_targets)
 
-        self.valid_features[base:base+len(img_1)]=valid_features
+        self.valid_features[base:base+len(crops[0])]=valid_features
 
         
 
