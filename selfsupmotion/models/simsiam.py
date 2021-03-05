@@ -227,6 +227,8 @@ class SimSiam(pl.LightningModule):
 
         self.coordconv = hyper_params.get("coordconv", None)
 
+        self.check_accuracy = False
+
         self.init_model()
 
         # compute iters per epoch
@@ -400,32 +402,44 @@ class SimSiam(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         #assert len(batch["OBJ_CROPS"]) == 2
-        crops = batch["OBJ_CROPS"]
+        #import faulthandler
+        #faulthandler.enable()
+        try:
+            crops = batch["OBJ_CROPS"]
+    
+            if batch_idx==0:
+                for i, crop in enumerate(crops):
+                    save_mosaic(f"img_{i}_train.jpg", crop)
 
-        if batch_idx==0:
-            for i, crop in enumerate(crops):
-                save_mosaic(f"img_{i}_train.jpg", crop)
+            if batch_idx==249:
+                print("!")
+            
+            #assert img_1.shape==torch.Size([32, 3, 224, 224])
+            uid = batch["UID"]
+            y = batch["CAT_ID"]
+    
+            if self.cuda_train_features is not None:
+                self.cuda_train_features = None #Free GPU memory
         
-        #assert img_1.shape==torch.Size([32, 3, 224, 224])
-        uid = batch["UID"]
-        y = batch["CAT_ID"]
-
-        if self.cuda_train_features is not None:
-            self.cuda_train_features = None #Free GPU memory
-       
-        loss, f1, f2 = self.compute_loss(crops)
-
-        base = batch_idx*self.batch_size
-        train_features= F.normalize(f1.detach(), dim=1).cpu()
-        #assert train_features.shape == torch.Size([32, 2048])
-        self.train_meta+=uid
-        self.train_features[base:base+train_features.shape[0]]=train_features
-        self.train_targets[base:base+train_features.shape[0]]=y
-        # log results
-        self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=False, logger=True)
-        self.log("lr", self.lr_schedule[self.trainer.global_step],
-                 on_step=True, on_epoch=False, prog_bar=False, logger=True)
-        return loss
+            loss, f1, f2 = self.compute_loss(crops)
+    
+            
+            #assert train_features.shape == torch.Size([32, 2048])
+            self.train_meta+=uid
+            
+            if self.check_accuracy:
+                base = batch_idx*self.batch_size
+                train_features= F.normalize(f1.detach(), dim=1).cpu()
+                self.train_features[base:base+train_features.shape[0]]=train_features
+                self.train_targets[base:base+train_features.shape[0]]=y
+            
+            # log results
+            self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=False, logger=True)
+            self.log("lr", self.lr_schedule[self.trainer.global_step],
+                     on_step=True, on_epoch=False, prog_bar=False, logger=True)
+            return loss
+        except:
+            raise ValueError("Not supposed to happen!")
 
     def validation_step(self, batch, batch_idx):
         #assert len(batch["OBJ_CROPS"]) == 2
@@ -433,9 +447,8 @@ class SimSiam(pl.LightningModule):
 
         if batch_idx==0:
             for i, crop in enumerate(crops):
-                save_mosaic(f"img_{i}_train.jpg", crop)
-            if self.cuda_train_features is None: #Transfer to GPU once.
-                self.cuda_train_features = self.train_features.half().cuda()
+                save_mosaic(f"img_{i}_val.jpg", crop)
+
 
         uid = batch["UID"]
         y = batch["CAT_ID"]
@@ -447,23 +460,27 @@ class SimSiam(pl.LightningModule):
         #loss = self.cosine_similarity(h1, z2) / 2 + self.cosine_similarity(h2, z1) / 2
         loss, f1, _ = self.compute_loss(crops)
 
-        self.valid_meta+=uid
-        base = batch_idx*self.batch_size
+        if self.check_accuracy:
+            self.valid_meta+=uid
+            base = batch_idx*self.batch_size
 
-        valid_features = F.normalize(f1, dim=1).detach().half()
+            if self.cuda_train_features is None: #Transfer to GPU once.
+                self.cuda_train_features = self.train_features.half().cuda()
+            valid_features = F.normalize(f1, dim=1).detach().half()
 
-        similarity = torch.mm(valid_features, self.cuda_train_features.T)
-        targets_idx= torch.argmax(similarity,axis=1).cpu()
-        neighbor_targets = self.train_targets[targets_idx]
-        match_count = (neighbor_targets==y.cpu()).sum()
-        accuracy = match_count/len(neighbor_targets)
+            similarity = torch.mm(valid_features, self.cuda_train_features.T)
+            targets_idx= torch.argmax(similarity,axis=1).cpu()
+            neighbor_targets = self.train_targets[targets_idx]
+            match_count = (neighbor_targets==y.cpu()).sum()
+            accuracy = match_count/len(neighbor_targets)
 
-        self.valid_features[base:base+len(crops[0])]=valid_features
+            self.valid_features[base:base+len(crops[0])]=valid_features
+            self.log("val_accuracy", accuracy)
 
         
 
         # log results
-        self.log("val_accuracy", accuracy)
+        
         self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=False, logger=True)
 
         return loss
