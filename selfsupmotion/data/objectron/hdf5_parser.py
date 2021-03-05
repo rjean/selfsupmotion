@@ -14,6 +14,7 @@ import h5py
 import numpy as np
 import pickle
 import pytorch_lightning
+from torch import tensor
 import torch.utils.data
 import tqdm
 
@@ -393,12 +394,12 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
 
 
 if __name__ == "__main__":
-    data_path = "/wdata/datasets/objectron/"
+    data_path = "/home/raphael/datasets/objectron/"
     hdf5_path = data_path + "extract_s5_raw.hdf5"
-    config_path = "/home/perf6/dev/selfsupmotion/examples/local/config-kpts.yaml"
+    config_path = "examples/local/config-pretrain-8gb-cyclic-dryrun.yaml"
     display_keypoints = True
     batch_size = 1
-    max_iters = 50
+    max_iters = 100000
 
     import yaml
     with open(config_path, "r") as stream:
@@ -430,14 +431,18 @@ if __name__ == "__main__":
     )
     assert dm.train_sample_count > 0
     dm.setup()
-    loader = dm.train_dataloader()
+    loader = dm.val_dataloader()
     norm_std = np.asarray([0.229, 0.224, 0.225]).reshape((1, 1, 3))
     norm_mean = np.asarray([0.485, 0.456, 0.406]).reshape((1, 1, 3))
-    display = batch_size == 1
-
+    #display = batch_size == 1
+    display = False
     iter = 0
     init_time = time.time()
     for batch in tqdm.tqdm(loader, total=len(loader)):
+        crops = batch["OBJ_CROPS"]
+        assert len(crops)==3
+        for crop in crops:
+            assert crop.shape == torch.Size([1,3, 224,224])
         if display:
             display_frames = []
             for frame_idx, (frame, pts, pts_3d) in enumerate(zip(batch["OBJ_CROPS"], batch["POINTS"], batch["POINT_3D"])):
@@ -449,7 +454,7 @@ if __name__ == "__main__":
                     frame = cv.circle(frame.copy(), pt, radius=3, color=color, thickness=-1)
                     cv.putText(frame, f"{pt_idx}", pt, cv.FONT_HERSHEY_SIMPLEX, 0.5, color)
                 display_frames.append(frame)
-            print(f"sorting_good = {batch['sorting_good']}")
+            #print(f"sorting_good = {batch['sorting_good']}")
             cv.imshow(
                 f"frames",
                 cv.resize(

@@ -122,7 +122,7 @@ def train_impl(
         accelerator=None,
         accumulate_grad_batches=hyper_params.get("accumulate_grad_batches", 1),
     )
-
+    
     trainer.fit(model, datamodule=datamodule)
     if early_stopping is not None:
         best_dev_result = float(early_stopping.best_score.cpu().numpy())
