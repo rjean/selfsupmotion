@@ -310,7 +310,7 @@ class SimSiam(pl.LightningModule):
 
         self.coordconv = hyper_params.get("coordconv", None)
 
-        self.monitor_accuracy = False
+        #self.monitor_accuracy = False
 
         self.init_model()
 
