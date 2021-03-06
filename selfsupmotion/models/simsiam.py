@@ -14,13 +14,11 @@ from torchvision.models.shufflenetv2 import shufflenet_v2_x1_0
 #from pl_bolts.models.self_supervised.simsiam.models import SiameseArm
 from pl_bolts.optimizers.lars_scheduling import LARSWrapper
 
-from thelper.nn.coordconv import swap_coordconv_layers
-
 import torch.nn.functional as F 
 import torch.nn as nn
 from typing import Optional, Tuple
 
-import selfsupmotion.zero_shot_pose as zsp
+#import selfsupmotion.zero_shot_pose as zsp
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +112,77 @@ class PredictionMLP(nn.Module):
         x = self.layer1(x)
         x = self.layer2(x)
         return x 
+import collections
+
+def unfreeze_batchnorm_layers(module):
+    """ Modifies the provided module by swapping frozen batch norm layers with unfrozen
+        ones for training.
+    """
+    from detectron2.layers.batch_norm import FrozenBatchNorm2d
+    if isinstance(module, FrozenBatchNorm2d):
+        return nn.BatchNorm2d(num_features=module.num_features, eps=module.eps)
+    
+    elif isinstance(module, torch.nn.Sequential):
+        return torch.nn.Sequential(*[unfreeze_batchnorm_layers(m) for m in module])
+    elif isinstance(module, collections.OrderedDict):
+        for mname, m in module.items():
+            module[mname] = unfreeze_batchnorm_layers(m)
+    elif isinstance(module, torch.nn.Module):
+        for attrib, m in module.__dict__.items():
+            if isinstance(m, FrozenBatchNorm2d):
+                setattr(module, attrib, unfreeze_batchnorm_layers(m))
+            elif isinstance(m, (torch.nn.Module, collections.OrderedDict)):
+                setattr(module, attrib, unfreeze_batchnorm_layers(m))
+    return module
+
+class Resnet50Layer4(nn.Module):
+    def __init__(self): 
+        super().__init__()
+
+        #Evil hard-coded adaptation layer between the "detectron-2" resnet-50 backbone
+        #for object detection which outputs the 14x14x1024 feature map and the resnet-50
+        #we normally use, which ouputs a 2048 wide embedding. This part is copy-pasted
+        #from pytorch lightning resnet-50 implementation.
+        #and a feature exp
+
+        #This part won't matter for Object Detection since it will completely removed!
+
+        #I've removed one downsampling step at the end. 
+        self.bn1 = nn.Sequential(
+            nn.Conv2d(1024, 512, kernel_size=(1, 1), stride=(1, 1), bias=False),
+            nn.BatchNorm2d(512, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True),
+            nn.Conv2d(512, 512, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), bias=False),
+            nn.BatchNorm2d(512, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True),
+            nn.Conv2d(512, 2048, kernel_size=(1, 1), stride=(1, 1), bias=False),
+            nn.BatchNorm2d(2048, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(2048, 2048, kernel_size=(1, 1), stride=(2, 2), bias=False),
+            nn.BatchNorm2d(2048, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True))
+        self.bn2 = nn.Sequential(
+            nn.Conv2d(2048, 512, kernel_size=(1, 1), stride=(1, 1), bias=False),
+            nn.BatchNorm2d(512, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True),
+            nn.Conv2d(512, 512, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False),
+            nn.BatchNorm2d(512, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True),
+            nn.Conv2d(512, 2048, kernel_size=(1, 1), stride=(1, 1), bias=False),
+            nn.BatchNorm2d(2048, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True),
+            nn.ReLU(inplace=True))
+        self.bn3= nn.Sequential(
+            nn.Conv2d(2048, 512, kernel_size=(1, 1), stride=(1, 1), bias=False),
+            nn.BatchNorm2d(512, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True),
+            nn.Conv2d(512, 512, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False),
+            nn.BatchNorm2d(512, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True),
+            nn.Conv2d(512, 2048, kernel_size=(1, 1), stride=(1, 1), bias=False),
+            nn.BatchNorm2d(2048, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True),
+            nn.ReLU(inplace=True))
+        self.avg_pool =  nn.AdaptiveAvgPool2d(output_size=(1, 1))
+
+
+    def forward(self, x):
+        x = self.bn1(x)
+        x = self.bn2(x)
+        x = self.bn3(x)
+        x = self.avg_pool(x)
+        return x.squeeze()
 
 class MLP(nn.Module):
     def __init__(self, input_dim: int = 2048, hidden_size: int = 4096, output_dim: int = 256) -> None:
@@ -141,9 +210,10 @@ class SiameseArm(nn.Module):
         output_dim: int = 256,
         predictor_input_dim: Optional[int] = None,
         hua_mlp = True,
+        detectron_resnet_layer4: Optional[nn.Module]=None
     ) -> None:
         super().__init__()
-
+        self.detectron_resnet_layer4 = detectron_resnet_layer4
         if predictor_input_dim is None: #By default, the predictor that the projector output as a input.
             predictor_input_dim = output_dim
 
@@ -151,6 +221,14 @@ class SiameseArm(nn.Module):
             raise ValueError("Please provide an encoder.")
         # Encoder
         self.encoder = encoder
+        self.detectron_encoder=False
+        try:
+            #Lazy loading. I don't want a hard dependency on Detectron2
+            from detectron2.modeling.backbone.resnet import ResNet
+            if type(self.encoder)==ResNet:
+                self.detectron_encoder = True
+        except:
+            self.detectron_encoder=False
         #input_dim = self.encoder.fc.in_features
         # Projector
         if hua_mlp: #Using Patrick Hua interpretation of SimSiam.
@@ -166,6 +244,9 @@ class SiameseArm(nn.Module):
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         if type(self.encoder)==torchvision.models.shufflenetv2.ShuffleNetV2:
             y = self.encoder(x)
+        elif self.detectron_encoder:
+            feature_map  = self.encoder(x)["res4"]
+            y = self.detectron_resnet_layer4(feature_map)
         else:
             y = self.encoder(x)[0]
         z = self.projector(y)
@@ -223,11 +304,13 @@ class SimSiam(pl.LightningModule):
         self.loss_function = hyper_params.get("loss_function", "simsiam")
         self.ntxent_temp = hyper_params.get("ntxent_temp", 0.5)
 
+        self.monitor_accuracy = hyper_params.get("monitor_accuracy", True) #Enabled by default. Can be disabled if it takes too much memory.
+
         self.accumulate_grad_batches_custom = hyper_params.get("accumulate_grad_batches_custom",1)
 
         self.coordconv = hyper_params.get("coordconv", None)
 
-        self.check_accuracy = False
+        self.monitor_accuracy = False
 
         self.init_model()
 
@@ -253,18 +336,21 @@ class SimSiam(pl.LightningModule):
 
         self.nce = torch.nn.CrossEntropyLoss()
 
+        self.detectron_resnet_layer4 = None
+
         #self.log("val_loss",0)
         #self.log("train_loss", 0)
 
 
 
     def init_model(self):
-        assert self.backbone in ["resnet18", "resnet50", "shufflenet_v2_x1_0"]
+        assert self.backbone in ["resnet18", "resnet50", "shufflenet_v2_x1_0", "resnet50_detectron"]
+        detectron_resnet_layer4 = None
         if self.backbone == "resnet18":
             backbone = resnet18
             backbone_network = backbone(first_conv=self.first_conv, maxpool1=self.maxpool1, return_all_feature_maps=False)
             self.feature_dim = backbone_network.fc.in_features
-
+        
         elif self.backbone == "resnet50":
             backbone = resnet50
             backbone_network = backbone(first_conv=self.first_conv, maxpool1=self.maxpool1, return_all_feature_maps=False)
@@ -274,9 +360,22 @@ class SimSiam(pl.LightningModule):
             backbone_network = backbone()
             self.feature_dim = backbone_network.fc.in_features
             backbone_network.fc = Identity()
+        elif self.backbone =="resnet50_detectron":
+            with open("examples/local/detectron_resnet50_c4_config.yaml", "r") as f:
+                import yaml
+                cfg = yaml.load(f, Loader=yaml.Loader)
+            from detectron2.modeling.backbone.resnet import build_resnet_backbone
+            from detectron2.layers import ShapeSpec
+            input_shape = ShapeSpec(3) #3 channels RGB
+            backbone_network = build_resnet_backbone(cfg,input_shape)
+            backbone_network = unfreeze_batchnorm_layers(backbone_network)
+            detectron_resnet_layer4 = Resnet50Layer4()
+            self.feature_dim = 2048
         else:
             raise ValueError(f"Unsupported backbone: {self.backbone}")
         
+        if self.coordconv is not None:
+            from thelper.nn.coordconv import swap_coordconv_layers #Lazy loading.
         if self.coordconv=="all":
             backbone_network = swap_coordconv_layers(backbone_network)
         if self.coordconv=="first":
@@ -287,12 +386,14 @@ class SimSiam(pl.LightningModule):
             #Use 2 stacked inputs for the predictor
             self.online_network = SiameseArm(
                 backbone_network, input_dim=self.feature_dim, hidden_size=self.hidden_mlp, 
-                output_dim=self.feat_dim, predictor_input_dim=self.feat_dim*2
+                output_dim=self.feat_dim, predictor_input_dim=self.feat_dim*2,
+                detectron_resnet_layer4=detectron_resnet_layer4
             )
         else:
             #All other methods work on pairs!
             self.online_network = SiameseArm(
-                backbone_network, input_dim=self.feature_dim, hidden_size=self.hidden_mlp, output_dim=self.feat_dim
+                backbone_network, input_dim=self.feature_dim, hidden_size=self.hidden_mlp, 
+                output_dim=self.feat_dim,detectron_resnet_layer4=detectron_resnet_layer4
             )
         #max_batch = math.ceil(self.num_samples/self.batch_size)
         encoder, projector = self.online_network.encoder, self.online_network.projector
@@ -401,45 +502,40 @@ class SimSiam(pl.LightningModule):
         return loss, f1, f2
 
     def training_step(self, batch, batch_idx):
-        #assert len(batch["OBJ_CROPS"]) == 2
-        #import faulthandler
-        #faulthandler.enable()
-        try:
-            crops = batch["OBJ_CROPS"]
-    
-            if batch_idx==0:
-                for i, crop in enumerate(crops):
-                    save_mosaic(f"img_{i}_train.jpg", crop)
+        crops = batch["OBJ_CROPS"]
 
-            if batch_idx==249:
-                print("!")
-            
-            #assert img_1.shape==torch.Size([32, 3, 224, 224])
-            uid = batch["UID"]
-            y = batch["CAT_ID"]
-    
-            if self.cuda_train_features is not None:
-                self.cuda_train_features = None #Free GPU memory
+        if batch_idx==0:
+            for i, crop in enumerate(crops):
+                save_mosaic(f"img_{i}_train.jpg", crop)
+
+        if batch_idx==249:
+            print("!")
         
-            loss, f1, f2 = self.compute_loss(crops)
+        #assert img_1.shape==torch.Size([32, 3, 224, 224])
+        uid = batch["UID"]
+        y = batch["CAT_ID"]
+
+        if self.cuda_train_features is not None:
+            self.cuda_train_features = None #Free GPU memory
     
-            
-            #assert train_features.shape == torch.Size([32, 2048])
-            self.train_meta+=uid
-            
-            if self.check_accuracy:
-                base = batch_idx*self.batch_size
-                train_features= F.normalize(f1.detach(), dim=1).cpu()
-                self.train_features[base:base+train_features.shape[0]]=train_features
-                self.train_targets[base:base+train_features.shape[0]]=y
-            
-            # log results
-            self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=False, logger=True)
-            self.log("lr", self.lr_schedule[self.trainer.global_step],
-                     on_step=True, on_epoch=False, prog_bar=False, logger=True)
-            return loss
-        except:
-            raise ValueError("Not supposed to happen!")
+        loss, f1, f2 = self.compute_loss(crops)
+
+        
+        #assert train_features.shape == torch.Size([32, 2048])
+        self.train_meta+=uid
+        
+        if self.monitor_accuracy:
+            base = batch_idx*self.batch_size
+            train_features= F.normalize(f1.detach(), dim=1).cpu()
+            self.train_features[base:base+train_features.shape[0]]=train_features
+            self.train_targets[base:base+train_features.shape[0]]=y
+        
+        # log results
+        self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=False, logger=True)
+        self.log("lr", self.lr_schedule[self.trainer.global_step],
+                 on_step=True, on_epoch=False, prog_bar=False, logger=True)
+        return loss
+
 
     def validation_step(self, batch, batch_idx):
         #assert len(batch["OBJ_CROPS"]) == 2
@@ -460,7 +556,7 @@ class SimSiam(pl.LightningModule):
         #loss = self.cosine_similarity(h1, z2) / 2 + self.cosine_similarity(h2, z1) / 2
         loss, f1, _ = self.compute_loss(crops)
 
-        if self.check_accuracy:
+        if self.monitor_accuracy:
             self.valid_meta+=uid
             base = batch_idx*self.batch_size
 
