@@ -25,6 +25,8 @@ from collections import OrderedDict
 import torch
 from torch.nn.parallel import DistributedDataParallel
 
+from torch.cuda.amp import autocast
+
 import detectron2.utils.comm as comm
 from detectron2.checkpoint import DetectionCheckpointer, PeriodicCheckpointer
 from detectron2.config import get_cfg
@@ -158,8 +160,9 @@ def do_train(cfg, model, resume=False):
         for data, iteration in zip(data_loader, range(start_iter, max_iter)):
             storage.iter = iteration
 
-            loss_dict = model(data)
-            losses = sum(loss_dict.values())
+            with autocast():
+                loss_dict = model(data)
+                losses = sum(loss_dict.values())
             assert torch.isfinite(losses).all(), loss_dict
 
             loss_dict_reduced = {k: v.item() for k, v in comm.reduce_dict(loss_dict).items()}
