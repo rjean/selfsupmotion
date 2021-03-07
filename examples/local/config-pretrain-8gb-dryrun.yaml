@@ -31,4 +31,4 @@ crop_ratio_max: 1.33
 crop_strategy: bbox
 sync_hflip: True 
 jitter_strength: 0.5
-
+monitor_accuracy: True
