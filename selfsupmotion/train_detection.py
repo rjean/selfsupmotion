@@ -134,7 +134,7 @@ def do_train(cfg, model, resume=False):
     ckpt_file = "output/pretrain_224_detectron/last-epoch=26-step=232928.ckpt"
     print(f"Loading backbone weights from {ckpt_file}!")
 
-    ckpt = torch.load("output/pretrain_224_detectron/last-epoch=26-step=232928.ckpt")
+    ckpt = torch.load(ckpt_file)
     state_dict = ckpt["state_dict"]
     backbone_state_dict = OrderedDict()
     for key in state_dict:
