@@ -382,16 +382,13 @@ class SimSiam(pl.LightningModule):
             backbone_network.conv1=swap_coordconv_layers(backbone_network.conv1)
             #backbone_network = 
         
+        self.cyclic_predictor = None
         if self.loss_function=="cyclic":
             #Use 2 stacked inputs for the predictor
-            self.online_network = SiameseArm(
-                backbone_network, input_dim=self.feature_dim, hidden_size=self.hidden_mlp, 
-                output_dim=self.feat_dim, predictor_input_dim=self.feat_dim*2,
-                detectron_resnet_layer4=detectron_resnet_layer4
-            )
-        else:
-            #All other methods work on pairs!
-            self.online_network = SiameseArm(
+            self.cyclic_predictor = PredictionMLP(self.feature_dim*2, self.hidden_mlp, self.feature_dim)
+        #else:
+        #All other methods work on pairs!
+        self.online_network = SiameseArm(
                 backbone_network, input_dim=self.feature_dim, hidden_size=self.hidden_mlp, 
                 output_dim=self.feat_dim,detectron_resnet_layer4=detectron_resnet_layer4
             )
@@ -481,22 +478,26 @@ class SimSiam(pl.LightningModule):
             loss = self.nt_xent_loss(z1, z2, self.ntxent_temp)
         elif self.loss_function=="cyclic":
             assert len(crops)==3, "Only triplets are supported for the Cyclic Loss"
+            assert self.cyclic_predictor is not None
             img_1, img_2, img_3 = crops
             f1 = self.online_network.encoder(img_1)[0]
             z1 = self.online_network.projector(f1)
-            #h1 = self.online_network.predictor(z1)
+            h1 = self.online_network.predictor(z1)
             f2 = self.online_network.encoder(img_2)[0]
             z2 = self.online_network.projector(f2)
-            #h2 = self.online_network.predictor(z2)
+            h2 = self.online_network.predictor(z2)
             f3 = self.online_network.encoder(img_3)[0]
             z3 = self.online_network.projector(f3)
-            #h3 = self.online_network.predictor(z3)
+            h3 = self.online_network.predictor(z3)
             #self.cosine_similarity(predicted, real)
             z1z2 = torch.hstack([z1,z2])
             z3z2 = torch.hstack([z3,z2])
-            z3_pred = self.online_network.predictor(z1z2)
-            z1_pred = self.online_network.predictor(z3z2)
-            loss = self.cosine_similarity(z1_pred, z1) / 2 + self.cosine_similarity(z3_pred, z3) / 2
+            z3_pred = self.cyclic_predictor(z1z2)
+            z1_pred = self.cyclic_predictor(z3z2)
+            loss = self.cosine_similarity(h1, z2) / 2 + self.cosine_similarity(h2, z1) / 2 #1->2, 2->1
+            loss += self.cosine_similarity(h3, z2) / 2 + self.cosine_similarity(h2, z3) / 2 #2->3, 3->2
+            loss += self.cosine_similarity(z1_pred, z1) / 2 + self.cosine_similarity(z3_pred, z3) / 2 #(1,2)->3, (3,2)->1
+            loss = loss/3 #Normalize to target loss=-1
         else:
             raise ValueError(f"The {self.loss_function} loss is not supported!")
         return loss, f1, f2
