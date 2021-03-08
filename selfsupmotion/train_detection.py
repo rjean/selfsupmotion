@@ -118,7 +118,7 @@ def do_test(cfg, model, output_dir):
         results = list(results.values())[0]
     return results
 
-def do_train(cfg, model, resume=False, output_dir="./output"):
+def do_train(cfg, model, resume=False, output_dir="./output", backbone_weights=None):
     
     model.train()
     optimizer = build_optimizer(cfg, model)
@@ -133,7 +133,7 @@ def do_train(cfg, model, resume=False, output_dir="./output"):
         checkpointer.resume_or_load(cfg.MODEL.WEIGHTS, resume=resume).get("iteration", -1) + 1
     )
     max_iter = cfg.SOLVER.MAX_ITER
-    ckpt_file= args.backbone_weights
+    ckpt_file= backbone_weights
     if ckpt_file is not None:
         print(f"Loading backbone weights from {ckpt_file}!")
         ckpt = torch.load(ckpt_file)
@@ -231,7 +231,7 @@ def main(args):
             model, device_ids=[comm.get_local_rank()], broadcast_buffers=False
         )
 
-    do_train(cfg, model, resume=args.resume, output_dir=args.output_dir)
+    do_train(cfg, model, resume=args.resume, output_dir=args.output_dir, backbone_weights=args.backbone_weights)
     return do_test(cfg, model, args.output_dir)
 
 
