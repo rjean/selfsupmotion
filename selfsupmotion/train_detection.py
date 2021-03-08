@@ -117,7 +117,6 @@ def do_test(cfg, model, output_dir):
     if len(results) == 1:
         results = list(results.values())[0]
     return results
-from selfsupmotion.models.simsiam import unfreeze_batchnorm_layers
 
 def do_train(cfg, model, resume=False, output_dir="./output"):
     
