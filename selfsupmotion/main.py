@@ -254,7 +254,7 @@ def generate_embeddings(args, model, datamodule, train=True, image_size=224):
     
     model.online_network=model.online_network.to(args.embeddings_device)
     #max_batch = int(args.subset_size*len(dataset)/args.batch_size)
-    all_features = torch.zeros((model.online_network.encoder.fc.in_features, len(dataset))).half().cuda()
+    all_features = torch.zeros((model.feature_dim, len(dataset))).half().cuda()
         #train_features = torch.zeros((encoder.fc.in_features, max_batch*args.batch_size))
         
     #train_labels = torch.zeros(max_batch*args.batch_size, dtype=torch.int64).cuda()
@@ -282,7 +282,8 @@ def generate_embeddings(args, model, datamodule, train=True, image_size=224):
             #_, z1, h1 = model.online_network(images1)
             #features= projector(encoder(images1)[0])
             #features = z1
-            features = model.online_network.encoder(images1)[0]
+            features, _, _ = model.online_network(images1)
+            #features = model.online_network.encoder(images1)[0]
 
                 #features=encoder(images)[0]
             features = F.normalize(features, dim=1)
