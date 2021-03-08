@@ -22,6 +22,7 @@ It also includes fewer abstraction, therefore is easier to add custom logic.
 import logging
 import os
 from collections import OrderedDict
+from selfsupmotion import models
 import torch
 from torch.nn.parallel import DistributedDataParallel
 
@@ -116,9 +117,10 @@ def do_test(cfg, model, output_dir):
     if len(results) == 1:
         results = list(results.values())[0]
     return results
-
+from selfsupmotion.models.simsiam import unfreeze_batchnorm_layers
 
 def do_train(cfg, model, resume=False, output_dir="./output"):
+    
     model.train()
     optimizer = build_optimizer(cfg, model)
     scheduler = build_lr_scheduler(cfg, optimizer)
@@ -144,9 +146,13 @@ def do_train(cfg, model, resume=False, output_dir="./output"):
                 new_key = key.replace("online_network.encoder.","")
                 backbone_state_dict[new_key] = state_dict[key]
                 mapped.append(key)
+        
+        
         model.backbone.load_state_dict(backbone_state_dict)
         print("Succesfully mapped the following weights:")
         print(mapped)
+        
+        
 
     periodic_checkpointer = PeriodicCheckpointer(
         checkpointer, cfg.SOLVER.CHECKPOINT_PERIOD, max_iter=max_iter
