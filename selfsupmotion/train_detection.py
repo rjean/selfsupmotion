@@ -101,12 +101,12 @@ def get_evaluator(cfg, dataset_name, output_folder=None):
     return DatasetEvaluators(evaluator_list)
 
 
-def do_test(cfg, model):
+def do_test(cfg, model, output_dir):
     results = OrderedDict()
     for dataset_name in cfg.DATASETS.TEST:
         data_loader = build_detection_test_loader(cfg, dataset_name)
         evaluator = get_evaluator(
-            cfg, dataset_name, os.path.join(cfg.OUTPUT_DIR, "inference", dataset_name)
+            cfg, dataset_name, os.path.join(output_dir, "inference", dataset_name)
         )
         results_i = inference_on_dataset(model, data_loader, evaluator)
         results[dataset_name] = results_i
@@ -118,13 +118,13 @@ def do_test(cfg, model):
     return results
 
 
-def do_train(cfg, model, resume=False):
+def do_train(cfg, model, resume=False, output_dir="./output"):
     model.train()
     optimizer = build_optimizer(cfg, model)
     scheduler = build_lr_scheduler(cfg, optimizer)
 
     checkpointer = DetectionCheckpointer(
-        model, cfg.OUTPUT_DIR, optimizer=optimizer, scheduler=scheduler
+        model, output_dir, optimizer=optimizer, scheduler=scheduler
     )
 
 
@@ -132,25 +132,27 @@ def do_train(cfg, model, resume=False):
         checkpointer.resume_or_load(cfg.MODEL.WEIGHTS, resume=resume).get("iteration", -1) + 1
     )
     max_iter = cfg.SOLVER.MAX_ITER
-
-    ckpt_file = "output/pretrain_224_detectron/last-epoch=26-step=232928.ckpt"
-    print(f"Loading backbone weights from {ckpt_file}!")
-
-    ckpt = torch.load(ckpt_file)
-    state_dict = ckpt["state_dict"]
-    backbone_state_dict = OrderedDict()
-    for key in state_dict:
-        if "online_network.encoder" in key and "num_batches_tracked" not in key:
-            new_key = key.replace("online_network.encoder.","")
-            backbone_state_dict[new_key] = state_dict[key]
-
-    model.backbone.load_state_dict(backbone_state_dict)
+    ckpt_file= args.backbone_weights
+    if ckpt_file is not None:
+        print(f"Loading backbone weights from {ckpt_file}!")
+        ckpt = torch.load(ckpt_file)
+        state_dict = ckpt["state_dict"]
+        backbone_state_dict = OrderedDict()
+        mapped = []
+        for key in state_dict:
+            if "online_network.encoder" in key and "num_batches_tracked" not in key:
+                new_key = key.replace("online_network.encoder.","")
+                backbone_state_dict[new_key] = state_dict[key]
+                mapped.append(key)
+        model.backbone.load_state_dict(backbone_state_dict)
+        print("Succesfully mapped the following weights:")
+        print(mapped)
 
     periodic_checkpointer = PeriodicCheckpointer(
         checkpointer, cfg.SOLVER.CHECKPOINT_PERIOD, max_iter=max_iter
     )
 
-    writers = default_writers(cfg.OUTPUT_DIR, max_iter) if comm.is_main_process() else []
+    writers = default_writers(output_dir, max_iter) if comm.is_main_process() else []
 
     # compared to "train_net.py", we do not support accurate timing and
     # precise BN here, because they are not trivial to implement in a small training loop
@@ -181,7 +183,7 @@ def do_train(cfg, model, resume=False):
                 and (iteration + 1) % cfg.TEST.EVAL_PERIOD == 0
                 and iteration != max_iter - 1
             ):
-                do_test(cfg, model)
+                do_test(cfg, model, output_dir)
                 # Compared to "train_net.py", the test results are not dumped to EventStorage
                 comm.synchronize()
 
@@ -213,10 +215,10 @@ def main(args):
     model = build_model(cfg)
     logger.info("Model:\n{}".format(model))
     if args.eval_only:
-        DetectionCheckpointer(model, save_dir=cfg.OUTPUT_DIR).resume_or_load(
+        DetectionCheckpointer(model, save_dir=args.output_dir).resume_or_load(
             cfg.MODEL.WEIGHTS, resume=args.resume
         )
-        return do_test(cfg, model)
+        return do_test(cfg, model, args.output_dir)
 
     distributed = comm.get_world_size() > 1
     if distributed:
@@ -224,12 +226,15 @@ def main(args):
             model, device_ids=[comm.get_local_rank()], broadcast_buffers=False
         )
 
-    do_train(cfg, model, resume=args.resume)
-    return do_test(cfg, model)
+    do_train(cfg, model, resume=args.resume, output_dir=args.output_dir)
+    return do_test(cfg, model, args.output_dir)
 
 
 if __name__ == "__main__":
-    args = default_argument_parser().parse_args()
+    parser = default_argument_parser()
+    parser.add_argument("--backbone-weights", type=str,help="Reload weights for the backbone from a PyTorch-Lightning checkpoint", default=None)    
+    parser.add_argument("--output-dir", default="output/", help="Directory were to load/save checkpoints")
+    args = parser.parse_args()
     print("Command Line Args:", args)
     launch(
         main,
