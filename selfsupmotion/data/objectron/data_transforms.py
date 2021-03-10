@@ -84,11 +84,13 @@ class SimSiamFramePairTrainDataTransform(object):
         if output_keypoints:
             sample["POINTS"] = output_keypoints
         
-        obj_crop_1 = sample["OBJ_CROPS"][0]
+        obj_crop_1 = None
         for i, obj_crop in enumerate(sample["OBJ_CROPS"]):
             if obj_crop.shape[0]<1 or obj_crop.shape[1]<1 or obj_crop.shape[2]!=3:
                 print(f"Unable to take crop on {sample['UID']}, moving on!")
                 sample["OBJ_CROPS"][i] = np.zeros((64,64,3), dtype=np.uint8)
+            if i==0:
+                obj_crop_1 = sample["OBJ_CROPS"][i]
             if self.crop_strategy=="bbox_same_crop":
                 sample["OBJ_CROPS"][i]=obj_crop_1 #Same object crop.
             assert len(sample["OBJ_CROPS"][i]) > 0, "Unable to crop image!" #Don't allow return empty object!
