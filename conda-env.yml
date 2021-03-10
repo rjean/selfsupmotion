@@ -12,6 +12,7 @@ dependencies:
   - gitdb
   - gitpython
   - h5py
+  - imageio-ffmpeg
   - lz4
   - matplotlib
   - mlflow
