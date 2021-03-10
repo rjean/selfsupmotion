@@ -28,8 +28,8 @@ crop_scale_min: 0.2
 crop_scale_max: 1.0
 crop_ratio_min: 0.75
 crop_ratio_max: 1.33
-crop_strategy: bbox
+crop_strategy: bbox_same_crop
 sync_hflip: True 
-same_crop: True
+#same_crop: True
 jitter_strength: 0.5
 

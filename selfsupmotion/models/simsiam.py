@@ -507,13 +507,6 @@ class SimSiam(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         crops = batch["OBJ_CROPS"]
 
-        
-
-        if self.same_crop: #Use the same crop instead of different video frame.
-            #This is use to simulate a basic SimSiam setupt. 
-            first_crop = crops[0]
-            crops = [first_crop for _ in crops]
-
         if batch_idx==0:
             for i, crop in enumerate(crops):
                 save_mosaic(f"img_{i}_train.jpg", crop)

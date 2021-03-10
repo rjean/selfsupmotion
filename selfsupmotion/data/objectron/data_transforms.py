@@ -39,7 +39,7 @@ class SimSiamFramePairTrainDataTransform(object):
         assert isinstance(sample, dict) and "IMAGE" in sample and "CENTROID_2D_IM" in sample
         assert len(sample["IMAGE"].shape) == 4 and sample["IMAGE"].shape[1:] == (640, 480, 3)
         assert len(sample["CENTROID_2D_IM"].shape) == 2 and sample["CENTROID_2D_IM"].shape[-1] == 2
-        assert self.crop_strategy in ["centroid","bbox"]
+        assert self.crop_strategy in ["centroid","bbox", "bbox_same_crop"]
         # get top-left/bottom-right coords for object of interest in first frame (0-th index)
         if self.crop_strategy=="centroid":
             if isinstance(crop_height, int):
@@ -55,7 +55,7 @@ class SimSiamFramePairTrainDataTransform(object):
                 tl = (int(round(sample["CENTROID_2D_IM"][0, 0] - max_size / 2)),
                       int(round(sample["CENTROID_2D_IM"][0, 1] - max_size / 2)))
                 br = (int(round(tl[0] + max_size)), int(round(tl[1] + max_size)))
-        elif self.crop_strategy=="bbox":
+        elif self.crop_strategy in ["bbox","bbox_same_crop"]:
             tl = (int(sample["POINTS"][0,:,0].min()), int(sample["POINTS"][0,:,1].min()))
             br = (int(sample["POINTS"][0,:,0].max()), int(sample["POINTS"][0,:,1].max()))
         else:
@@ -83,10 +83,14 @@ class SimSiamFramePairTrainDataTransform(object):
         sample["OBJ_CROPS"] = output_crop_seq
         if output_keypoints:
             sample["POINTS"] = output_keypoints
+        
+        obj_crop_1 = sample["OBJ_CROPS"][0]
         for i, obj_crop in enumerate(sample["OBJ_CROPS"]):
             if obj_crop.shape[0]<1 or obj_crop.shape[1]<1 or obj_crop.shape[2]!=3:
                 print(f"Unable to take crop on {sample['UID']}, moving on!")
                 sample["OBJ_CROPS"][i] = np.zeros((64,64,3), dtype=np.uint8)
+            if self.crop_strategy=="bbox_same_crop":
+                sample["OBJ_CROPS"][i]=obj_crop_1 #Same object crop.
             assert len(sample["OBJ_CROPS"][i]) > 0, "Unable to crop image!" #Don't allow return empty object!
         return sample
 
@@ -105,6 +109,7 @@ class SimSiamFramePairTrainDataTransform(object):
             augmentation = True, #Will be used to disable augmentation on inference / validation.
             crop_strategy = "centroid",
             sync_hflip= False,
+            same_crop=False
     ) -> None:
         self.crop_height = crop_height
         self.input_height = input_height
@@ -119,6 +124,7 @@ class SimSiamFramePairTrainDataTransform(object):
         self.sync_hflip=sync_hflip
         self.crop_scale = crop_scale
         self.crop_ratio = crop_ratio
+        self.same_crop = same_crop
 
         bbox_transforms = [
                 albumentations.LongestMaxSize(
@@ -130,7 +136,7 @@ class SimSiamFramePairTrainDataTransform(object):
                     border_mode=0,
                 )
             ]
-        assert self.crop_strategy in ["centroid","bbox"]
+        assert self.crop_strategy in ["centroid","bbox", "bbox_same_crop"]
 
         if self.enable_augmentation:
             augment_transforms = [
@@ -141,7 +147,7 @@ class SimSiamFramePairTrainDataTransform(object):
                     ratio=self.crop_ratio,
                 ),
             ]
-            if self.crop_strategy=="bbox":
+            if self.crop_strategy in ["bbox","bbox_same_crop"]:
                 augment_transforms = bbox_transforms + augment_transforms
             if self.use_hflip_augment:
                 augment_transforms.append(albumentations.HorizontalFlip(p=0.5))
