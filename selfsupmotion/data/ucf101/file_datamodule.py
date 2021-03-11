@@ -70,18 +70,18 @@ class UCF101Dataset(torch.utils.data.Dataset):
         if debug_subset_size is not None:
             self.samples = random.sample(self.samples, debug_subset_size)     
 
-    def _get_sequences(self, category, split="train"):
+    def _get_sequences(self, category, split="train", fold=1):
     
         if split == 'train':
             partition = 'train'
-            splitIndices = [1, 2]
+            splitIndices = [fold]
         elif split == 'valid':
             # NOTE: use the third split as validation set
-            partition = 'train'
-            splitIndices = [3]
-        elif split == 'test':
             partition = 'test'
-            splitIndices = [1, 2, 3]
+            splitIndices = [fold]
+        #elif split == 'test':
+        #    partition = 'test'
+        #    splitIndices = [1, 2, 3]
         else:
             raise ValueError(f"Unsupported split: {split}")
 
@@ -231,7 +231,7 @@ class UCF101FileDataModule(pytorch_lightning.LightningDataModule):
             self.eval_transform = self.get_ucf101_transform(self.image_size, evaluation=True)
             self.train_dataset = UCF101Dataset(self.data_dir, split="train", transform=self.train_transform, pair=self.pairing)
             self.val_dataset = UCF101Dataset(self.data_dir, split="valid", transform=self.eval_transform, pair=self.pairing)
-            self.test_dataset = UCF101Dataset(self.data_dir, split="test", transform=self.eval_transform, pair=self.pairing)
+            #self.test_dataset = UCF101Dataset(self.data_dir, split="test", transform=self.eval_transform, pair=self.pairing)
             self.train_sample_count = len(self.train_dataset)
             self.valid_sample_count = len(self.val_dataset)
             self.issetup=True
