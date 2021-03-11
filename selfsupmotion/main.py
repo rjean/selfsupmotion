@@ -19,6 +19,8 @@ from selfsupmotion.utils.file_utils import rsync_folder
 from selfsupmotion.utils.logging_utils import LoggerWriter, log_exp_details
 from selfsupmotion.utils.reproducibility_utils import set_seed
 
+from selfsupmotion.models.simsiam import save_mosaic #TODO: Place in some "utils" file.
+
 import selfsupmotion.data.objectron.hdf5_parser
 import selfsupmotion.data.objectron.file_datamodule
 
@@ -209,6 +211,9 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger, tbx_logger):
         if args.embeddings_ckpt is None:
             raise ValueError("Please manually provide the checkpoints using the --embeddings-ckpt argument")
         model = load_model(hyper_params, checkpoint=args.embeddings_ckpt)
+        ckpt = torch.load(args.embeddings_ckpt)
+        print(f"Loading from weights from {args.embeddings_ckpt}")
+        model.load_state_dict(ckpt["state_dict"])
         #model.load_from_checkpoint(args.embeddings_ckpt)
         generate_embeddings(args, model, datamodule=dm,train=True, image_size=hyper_params["image_size"])
         generate_embeddings(args, model, datamodule=dm,train=False, image_size=hyper_params["image_size"])
@@ -249,7 +254,7 @@ def generate_embeddings(args, model, datamodule, train=True, image_size=224):
     
     model.online_network=model.online_network.to(args.embeddings_device)
     #max_batch = int(args.subset_size*len(dataset)/args.batch_size)
-    all_features = torch.zeros((model.online_network.encoder.fc.in_features, len(dataset))).half().cuda()
+    all_features = torch.zeros((model.feature_dim, len(dataset))).half().cuda()
         #train_features = torch.zeros((encoder.fc.in_features, max_batch*args.batch_size))
         
     #train_labels = torch.zeros(max_batch*args.batch_size, dtype=torch.int64).cuda()
@@ -257,8 +262,10 @@ def generate_embeddings(args, model, datamodule, train=True, image_size=224):
     sequence_uids = []
     with torch.no_grad():
         batch_num = 0
-        for batch in local_progress:
-            images1 = batch["OBJ_CROPS"][0]
+        for batch_idx, batch in enumerate(local_progress):
+            images1 =  batch["OBJ_CROPS"][0]
+            if batch_idx==0:
+                save_mosaic("embeddings.png", images1)
             meta = batch["UID"]
             targets = batch["CAT_ID"]
             #images1, _, meta= data
@@ -275,7 +282,8 @@ def generate_embeddings(args, model, datamodule, train=True, image_size=224):
             #_, z1, h1 = model.online_network(images1)
             #features= projector(encoder(images1)[0])
             #features = z1
-            features = model.online_network.encoder(images1)[0]
+            features, _, _ = model.online_network(images1)
+            #features = model.online_network.encoder(images1)[0]
 
                 #features=encoder(images)[0]
             features = F.normalize(features, dim=1)
