@@ -59,9 +59,11 @@ class UCF101Dataset(torch.utils.data.Dataset):
         self.number_of_pictures = 0
 
         self.sequences_by_categories = {}
+        self.seq_subset = []
         for category in self.categories:
             sequences = self._get_sequences(category, self.split)
             self.sequences_by_categories[category] = sequences
+            self.seq_subset+=sequences
 
         self._load_samples(self.split)
 
@@ -213,7 +215,7 @@ class UCF101Dataset(torch.utils.data.Dataset):
 UCF101_PATH = "datasets/ucf101/112x112/"
 
 class UCF101FileDataModule(pytorch_lightning.LightningDataModule):
-    def __init__(self, data_dir: str = UCF101_PATH, batch_size=512, image_size=112, num_workers=6, pairing="next", dryrun=False):
+    def __init__(self, data_dir: str = UCF101_PATH, batch_size=512, image_size=112, num_workers=16, pairing="next", dryrun=False):
         super().__init__()
         self.data_dir = data_dir
         self.batch_size = batch_size
@@ -238,7 +240,7 @@ class UCF101FileDataModule(pytorch_lightning.LightningDataModule):
         if not evaluation:
             p_blur = 0.5 if image_size > 32 else 0 
             transform_list = [
-                T.RandomResizedCrop(image_size, scale=(0.2, 1.0)),
+                T.RandomResizedCrop(image_size, scale=(0.6, 1.4)),
                 T.RandomApply([T.ColorJitter(0.4,0.4,0.4,0.1)], p=0.8),
                 T.RandomGrayscale(p=0.2),
                 T.RandomApply([T.GaussianBlur(kernel_size=image_size//20*2+1, sigma=(0.1, 2.0))], p=p_blur),

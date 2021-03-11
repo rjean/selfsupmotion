@@ -1,12 +1,15 @@
 import os
+import selfsupmotion
 import imageio
 import logging
 import cv2
 import tqdm
 import traceback
 
-from utils import getUCF101ClassMapping
+#from utils import getUCF101ClassMapping
 
+from selfsupmotion.data.ucf101.utils import getUCF101ClassMapping
+#from selfsupmotion.data.utils
 
 def bestFitRescaleCropCenter(img, outputSize=(112, 112)):
     if not outputSize[0] == outputSize[1]:

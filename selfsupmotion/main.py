@@ -189,6 +189,21 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger, tbx_logger):
             pairing=hyper_params["pairing"],
             dryrun=args.dryrun)
         dm.setup() #In order to have the sample count.
+
+   #se
+    
+    elif args.data_module=="ucf101":
+        from selfsupmotion.data.test.test_file import nop
+        #from selfsupmotion.data.ucf101.test_file import nop
+        #selfsupmotion.data.objectron
+        from selfsupmotion.data.ucf101.file_datamodule import UCF101FileDataModule
+        dm = UCF101FileDataModule(
+            data_dir=args.data,
+            num_workers=hyper_params["num_workers"],
+            batch_size=hyper_params["batch_size"],
+            pairing=hyper_params["pairing"],
+            dryrun=args.dryrun)
+        dm.setup() #In order to have the sample count.
     else:
         raise ValueError(f"Invalid datamodule specified on CLI : {args.data_module}")
 
