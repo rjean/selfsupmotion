@@ -105,6 +105,7 @@ def train_impl(
             dirpath=output,
             filename="last-{epoch}-{step}",
             verbose=use_progress_bar,
+            save_last=True,
         ),
     ])
 
