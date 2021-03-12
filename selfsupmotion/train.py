@@ -34,6 +34,7 @@ def train(**kwargs):  # pragma: no cover
         # note the minus - cause orion is always trying to minimize (cit. from the guide)
         value=-float(best_dev_metric))])
 
+from pytorch_lightning import Callback
 
 def load_mlflow(output):
     """Load the mlflow run id.
@@ -84,6 +85,7 @@ def train_impl(
         resume_from_checkpoint = None
 
     early_stopping, callbacks = None, []
+    #from selfsupmotion.checkpointing import ModelCheckpointLastOnly
     if hyper_params["early_stop_metric"] not in ["None", "none", "", None]:
         early_stopping = pl.callbacks.EarlyStopping(
             monitor=hyper_params["early_stop_metric"],
@@ -99,13 +101,18 @@ def train_impl(
             mode="auto",
         )
         callbacks.extend([early_stopping, best_checkpoint_callback])
+    from selfsupmotion.checkpointing import ModelCheckpointLastOnly
     callbacks.extend([
         pl_bolts.callbacks.PrintTableMetricsCallback(),
-        pl.callbacks.ModelCheckpoint(
+        ModelCheckpointLastOnly(
             dirpath=output,
             filename="last-{epoch}-{step}",
-            verbose=use_progress_bar,
-            save_last=True,
+            #verbose=use_progress_bar,
+            #monitor=hyper_params["early_stop_metric"],
+            #mode="max", #We have to hack arround to save the last checkpoint apparently!
+            verbose=True,
+            #save_top_k=3, #Just make sure that we save the last checkpoint.
+            #save_last=True,
         ),
     ])
 
