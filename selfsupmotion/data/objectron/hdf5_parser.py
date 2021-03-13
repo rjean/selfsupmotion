@@ -125,6 +125,7 @@ class ObjectronHDF5FrameTupleParser(ObjectronHDF5SequenceParser):
             _target_fields: typing.Optional[typing.List[typing.AnyStr]] = None,
             _transforms: typing.Optional[typing.Any] = None,
             _resort_keypoints: bool = False,
+            pairing_strategy="next"
     ):
         # also make a local var for the archive name, as we don't want to overwrite cache for each
         hdf5_name = os.path.basename(hdf5_path)  # yes, it's normal that this looks "unused" (it's used)
@@ -138,16 +139,29 @@ class ObjectronHDF5FrameTupleParser(ObjectronHDF5SequenceParser):
         self.keep_only_frames_with_valid_kpts = keep_only_frames_with_valid_kpts
         self.target_fields = self.data_fields if not _target_fields else _target_fields
         self.transforms = _transforms
-        cache_path = os.path.join(os.path.dirname(hdf5_path), cache_hash + ".pkl")
-        if os.path.isfile(cache_path):
-            with open(cache_path, "rb") as fd:
-                self.frame_pair_map = pickle.load(fd)
+        self.pairing_strategy = pairing_strategy
+        if self.pairing_strategy=="next":
+            cache_path = os.path.join(os.path.dirname(hdf5_path), cache_hash + ".pkl")
+            if os.path.isfile(cache_path):
+                with open(cache_path, "rb") as fd:
+                    self.frame_pair_map = pickle.load(fd)
+            else:
+                self.frame_pair_map = self._fetch_tuple_metadata()
+                with open(cache_path, "wb") as fd:
+                    pickle.dump(self.frame_pair_map, fd)
+            self.resort_keypoints = _resort_keypoints
+        elif pairing_strategy=="uniform":
+            cache_path = os.path.join(os.path.dirname(hdf5_path), cache_hash + "_random.pkl")
+            if os.path.isfile(cache_path):
+                with open(cache_path, "rb") as fd:
+                    self.frame_list, self.sequence_map = pickle.load(fd)
+            else:
+                self.frame_list, self.sequence_map = self._fetch_frame_metadata()
+                with open(cache_path, "wb") as fd:
+                    pickle.dump((self.frame_list, self.sequence_map), fd)
+            self.resort_keypoints = _resort_keypoints
         else:
-            self.frame_pair_map = self._fetch_tuple_metadata()
-            with open(cache_path, "wb") as fd:
-                pickle.dump(self.frame_pair_map, fd)
-        self.resort_keypoints = _resort_keypoints
-
+            raise ValueError(f"Unsuported pairing strategy: {self.pairing_strategy}")
     def _fetch_tuple_metadata(self):
         tuple_map = {}
         assert len(self.seq_subset) > 0
@@ -188,40 +202,134 @@ class ObjectronHDF5FrameTupleParser(ObjectronHDF5SequenceParser):
                     tuple_start_idx += self.tuple_offset
         return tuple_map
 
+    def _fetch_frame_metadata(self):
+        frame_list = []
+        sequence_map = {}
+        assert len(self.seq_subset) > 0
+        with h5py.File(self.hdf5_path, mode="r") as fd:
+            progress_bar = tqdm.tqdm(
+                self.seq_subset, total=len(self.seq_subset),
+                desc=f"pre-fetching tuple metadata"
+            )
+            for seq_name in progress_bar:
+                if seq_name not in sequence_map:
+                    sequence_map[seq_name]=[] #Create empty list
+                seq_data = fd[seq_name]
+                seq_len = len(seq_data["IMAGE"])
+                if seq_len <= self.frame_offset:  # skip, can't create frame tuples
+                    continue
+                seq_image_size = (seq_data.attrs["IMAGE_WIDTH"], seq_data.attrs["IMAGE_HEIGHT"])
+                # note: the frame idx here is not the real index if the sequence was subsampled
+                tuple_start_idx = 0
+                while tuple_start_idx < seq_len: #TODO: Replace by for loop.
+                    candidate_frame = collections.defaultdict(list)
+                    #for tuple_idx_offset in range(self.tuple_length):
+                    curr_frame_idx = tuple_start_idx
+                    if curr_frame_idx >= seq_len:
+                        break  # if we're oob for any element in the tuple, break it off
+                    if not self._is_frame_valid(seq_data, curr_frame_idx):
+                        break  # if an element has a bad frame, break it off
+                    # we also get the 2d point projections here
+                    curr_pts_2d = seq_data["POINT_2D"][curr_frame_idx].reshape((-1, 3))[:, :2]
+                    assert len(curr_pts_2d) == 9, "did we not melt the dataset down to 1 instance?"
+                    if self.keep_only_frames_with_valid_kpts:
+                        # arbitrary pick: min valid keypoint count = 3
+                        good_kpts = np.logical_and(curr_pts_2d <= 1, curr_pts_2d >= 0).all(axis=1)
+                        if sum(good_kpts) < 3:
+                            break
+                    candidate_frame["POINT_2D"].append(np.multiply(curr_pts_2d, seq_image_size))
+                    candidate_frame["frame_idxs"].append(curr_frame_idx)
+                    #if len(candidate_tuple_vals["frame_idxs"]) == self.tuple_length:  # if it's all good, keep it
+                    candidate_frame["seq_name"] = seq_name
+                    frame_list.append(dict(candidate_frame))
+                    sequence_map[seq_name].append(dict(candidate_frame))
+                    tuple_start_idx += 1
+        return frame_list, sequence_map
+
     def __len__(self):
-        return len(self.frame_pair_map)
+        if self.pairing_strategy=="next":
+            return len(self.frame_pair_map)
+        elif self.pairing_strategy=="uniform":
+            return len(self.frame_list)
+        else:
+            raise NotImplementedError
 
     def __getitem__(self, idx):
-        assert 0 <= idx < len(self.frame_pair_map), "frame pair index oob"
         if self.local_fd is None:
             self.local_fd = h5py.File(self.hdf5_path, mode="r")
-        meta = self.frame_pair_map[idx]
-        seq_name = meta["seq_name"]
-        seq_data = self.local_fd[seq_name]
-        sample = {
-            field: np.stack([
-                self._decode_jpeg(seq_data[field][frame_idx])
-                if field == "IMAGE" else seq_data[field][frame_idx]
-                for frame_idx in meta["frame_idxs"]
-            ]) for field in self.target_fields
-        }
-        uid = f"hdf5_{seq_name}_" + str(seq_data["IMAGE_ID"][meta["frame_idxs"][0]])
-        sample = {
-            "SEQ_IDX": seq_name,
-            "UID": uid, #TODO: Harmonize Unique Identifiers for evaluation.
-            "FRAME_REAL_IDXS": np.asarray([seq_data["IMAGE_ID"][idx] for idx in meta["frame_idxs"]]),
-            "FRAME_IDXS": np.asarray(meta["frame_idxs"]),
-            "POINTS": np.pad(np.asarray(meta["POINT_2D"]), ((0, 0), (0, 0), (0, 2))),  # pad 2d kpts for augments
-            "CAT_ID": self.objects.index(seq_name.split("/")[0]),
-            **sample,
-        }
+        if self.pairing_strategy=="next": #TODO: Intelligent refactor!
+            assert 0 <= idx < len(self.frame_pair_map), "frame pair index oob"
+            meta = self.frame_pair_map[idx]
+            seq_name = meta["seq_name"]
+            seq_data = self.local_fd[seq_name]
+            sample = {
+                field: np.stack([
+                    self._decode_jpeg(seq_data[field][frame_idx])
+                    if field == "IMAGE" else seq_data[field][frame_idx]
+                    for frame_idx in meta["frame_idxs"]
+                ]) for field in self.target_fields
+            }
+            uid = f"hdf5_{seq_name}_" + str(seq_data["IMAGE_ID"][meta["frame_idxs"][0]])
+            sample = {
+                "SEQ_IDX": seq_name,
+                "UID": uid, #TODO: Harmonize Unique Identifiers for evaluation.
+                "FRAME_REAL_IDXS": np.asarray([seq_data["IMAGE_ID"][idx] for idx in meta["frame_idxs"]]),
+                "FRAME_IDXS": np.asarray(meta["frame_idxs"]),
+                "POINTS": np.pad(np.asarray(meta["POINT_2D"]), ((0, 0), (0, 0), (0, 2))),  # pad 2d kpts for augments
+                "CAT_ID": self.objects.index(seq_name.split("/")[0]),
+                **sample,
+            }
+        elif self.pairing_strategy=="uniform":
+            assert 0 <= idx < len(self.frame_list), "frame index oob"
+            meta = self.frame_list[idx]
+            seq_name = meta["seq_name"]
+            seq_data = self.local_fd[seq_name]
+            import random
+            other_frame = random.sample(self.sequence_map[seq_name],1)[0] #Uniform random sample.
+            if len(meta["frame_idxs"])>1:
+                print(f"To many fram idxs for sample {seq_name}/{meta['frame_idxs']}")
+            if len(other_frame["frame_idxs"])>1:
+                print(f"To many fram idxs for sample {seq_name}/{other_frame['frame_idxs']}")
+            meta["frame_idxs"] = [meta["frame_idxs"][0]]
+            meta["POINT_2D"] = [meta["POINT_2D"][0]] #Handle rarely occuring strays
+            other_frame["frame_idxs"] = [other_frame["frame_idxs"][0]]
+            other_frame["POINT_2D"] = [other_frame["POINT_2D"][0]] #Handle rarely occuring strays
+            assert len(meta["frame_idxs"])==1
+            assert len(other_frame["frame_idxs"])==1
+                
+            meta["frame_idxs"].append(other_frame["frame_idxs"][0])
+            meta["POINT_2D"].append(other_frame["POINT_2D"][0])
+            sample = {
+                field: np.stack([
+                    self._decode_jpeg(seq_data[field][frame_idx])
+                    if field == "IMAGE" else seq_data[field][frame_idx]
+                    for frame_idx in meta["frame_idxs"]
+                ]) for field in self.target_fields
+            }
+
+            uid = f"hdf5_{seq_name}_" + str(seq_data["IMAGE_ID"][meta["frame_idxs"][0]])
+            sample = {
+                "SEQ_IDX": seq_name,
+                "UID": uid, #TODO: Harmonize Unique Identifiers for evaluation.
+                "FRAME_REAL_IDXS": np.asarray([seq_data["IMAGE_ID"][idx] for idx in meta["frame_idxs"]]),
+                "FRAME_IDXS": np.asarray(meta["frame_idxs"]),
+                "POINTS": np.pad(np.asarray(meta["POINT_2D"]), ((0, 0), (0, 0), (0, 2))),  # pad 2d kpts for augments
+                "CAT_ID": self.objects.index(seq_name.split("/")[0]),
+                **sample,
+            }
+            assert len(sample["FRAME_IDXS"])==2
+            assert len(sample["FRAME_REAL_IDXS"])==2
+            assert len(sample["POINTS"])==2
+            assert len(sample["IMAGE"])==2
+            
+        else:
+            raise NotImplementedError
         if self.transforms is not None:
             sample = self.transforms(sample)
         # resort after transforms so flips can be used
         if self.resort_keypoints:
             sample["sorting_good"] = selfsupmotion.data.objectron.utils.sort_sample_keypoints(sample)
         return sample
-
 
 class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
 
@@ -251,6 +359,7 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
             crop_strategy: str = "centroid",
             sync_hflip = False,
             resort_keypoints: bool = False,
+            pairing_strategy: str = "next",
             *args: typing.Any,
             **kwargs: typing.Any,
     ):
@@ -278,6 +387,7 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
         self.crop_strategy = crop_strategy
         self.sync_hflip = sync_hflip
         self.resort_keypoints = resort_keypoints
+        self.pairing_strategy = pairing_strategy
         # create temp dataset to get total sequence/sample count
         dataset = ObjectronHDF5FrameTupleParser(
             hdf5_path=self.hdf5_path,
@@ -286,6 +396,7 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
             frame_offset=self.frame_offset,
             tuple_offset=self.tuple_offset,
             keep_only_frames_with_valid_kpts=self.keep_only_frames_with_valid_kpts,
+            pairing_strategy=self.pairing_strategy
         )
         # we do the split in a 2nd pass and re-parse the subsets
         # ...caching will be 2x longer, but it's the easiest solution, and it costs ~5 minutes once
@@ -297,8 +408,14 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
         self.train_seq_count = len(seq_subset_idxs) - self.valid_seq_count
         self.valid_seq_subset = sorted([dataset.seq_subset[idx] for idx in seq_subset_idxs[:self.valid_seq_count]])
         self.train_seq_subset = sorted([dataset.seq_subset[idx] for idx in seq_subset_idxs[self.valid_seq_count:]])
-        self.valid_sample_subset = [idx for idx, m in dataset.frame_pair_map.items() if m["seq_name"] in self.valid_seq_subset]
-        self.train_sample_subset = [idx for idx, m in dataset.frame_pair_map.items() if m["seq_name"] in self.train_seq_subset]
+        if self.pairing_strategy=="next":
+            self.valid_sample_subset = [idx for idx, m in dataset.frame_pair_map.items() if m["seq_name"] in self.valid_seq_subset]
+            self.train_sample_subset = [idx for idx, m in dataset.frame_pair_map.items() if m["seq_name"] in self.train_seq_subset]
+        elif self.pairing_strategy=="uniform":
+            self.valid_sample_subset = [idx for idx, m in enumerate(dataset.frame_list) if m["seq_name"] in self.valid_seq_subset]
+            self.train_sample_subset = [idx for idx, m in enumerate(dataset.frame_list) if m["seq_name"] in self.train_seq_subset]
+        else:
+            raise ValueError(f"Unsupported pairing stragegy: {self.pairing_strategy}")
         self.valid_sample_count = len(self.valid_sample_subset)
         self.train_sample_count = len(self.train_sample_subset)
         assert len(np.intersect1d(self.valid_seq_subset, self.train_seq_subset)) == 0
@@ -327,6 +444,7 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
             _target_fields=target_fields,
             _transforms=self.val_transforms,
             _resort_keypoints=self.resort_keypoints,
+            pairing_strategy=self.pairing_strategy
         )
         self.train_dataset = ObjectronHDF5FrameTupleParser(
             hdf5_path=self.hdf5_path,
@@ -338,6 +456,7 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
             _target_fields=target_fields,
             _transforms=self.train_transforms,
             _resort_keypoints=self.resort_keypoints,
+            pairing_strategy=self.pairing_strategy
         )
 
     def train_dataloader(self, evaluation=False) -> torch.utils.data.DataLoader:
