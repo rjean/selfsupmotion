@@ -17,6 +17,7 @@ import pytorch_lightning
 from torch import tensor
 import torch.utils.data
 import tqdm
+import random
 
 try:
     import turbojpeg
@@ -150,7 +151,7 @@ class ObjectronHDF5FrameTupleParser(ObjectronHDF5SequenceParser):
                 with open(cache_path, "wb") as fd:
                     pickle.dump(self.frame_pair_map, fd)
             self.resort_keypoints = _resort_keypoints
-        elif pairing_strategy=="uniform":
+        elif pairing_strategy in ["uniform","tcn_triplet"]:
             cache_path = os.path.join(os.path.dirname(hdf5_path), cache_hash + "_random.pkl")
             if os.path.isfile(cache_path):
                 with open(cache_path, "rb") as fd:
@@ -249,7 +250,7 @@ class ObjectronHDF5FrameTupleParser(ObjectronHDF5SequenceParser):
     def __len__(self):
         if self.pairing_strategy=="next":
             return len(self.frame_pair_map)
-        elif self.pairing_strategy=="uniform":
+        elif self.pairing_strategy in ["uniform", "tcn_triplet"]:
             return len(self.frame_list)
         else:
             raise NotImplementedError
@@ -257,7 +258,7 @@ class ObjectronHDF5FrameTupleParser(ObjectronHDF5SequenceParser):
     def __getitem__(self, idx):
         if self.local_fd is None:
             self.local_fd = h5py.File(self.hdf5_path, mode="r")
-        if self.pairing_strategy=="next": #TODO: Intelligent refactor!
+        if self.pairing_strategy=="next": #TODO: Intelligent refactor. So much code duplication!
             assert 0 <= idx < len(self.frame_pair_map), "frame pair index oob"
             meta = self.frame_pair_map[idx]
             seq_name = meta["seq_name"]
@@ -279,12 +280,12 @@ class ObjectronHDF5FrameTupleParser(ObjectronHDF5SequenceParser):
                 "CAT_ID": self.objects.index(seq_name.split("/")[0]),
                 **sample,
             }
-        elif self.pairing_strategy=="uniform":
+        elif self.pairing_strategy=="uniform":  #TODO: Intelligent refactor. So much code duplication!
             assert 0 <= idx < len(self.frame_list), "frame index oob"
             meta = self.frame_list[idx]
             seq_name = meta["seq_name"]
             seq_data = self.local_fd[seq_name]
-            import random
+            #import random
             other_frame = random.sample(self.sequence_map[seq_name],1)[0] #Uniform random sample.
             if len(meta["frame_idxs"])>1:
                 print(f"To many fram idxs for sample {seq_name}/{meta['frame_idxs']}")
@@ -321,7 +322,80 @@ class ObjectronHDF5FrameTupleParser(ObjectronHDF5SequenceParser):
             assert len(sample["FRAME_REAL_IDXS"])==2
             assert len(sample["POINTS"])==2
             assert len(sample["IMAGE"])==2
+        elif self.pairing_strategy=="tcn_triplet": #TODO: Intelligent refactor. So much code duplication!
+            assert 0 <= idx < len(self.frame_list), "frame index oob"
+            meta = self.frame_list[idx]
+            frame_idx = meta["frame_idxs"][0]
+            seq_name = meta["seq_name"]
+            seq_data = self.local_fd[seq_name]
+            #From TCN paper:
+            #Positive range: 0.2s. At 5 fps, this is the previous or next frame.
+            #Margin = 2xpositive range = +-0.4s. That is any other frame.
+            pos_range=1 #0.2s
+            margin=2 #0.4s
+            direction = random.choice([True, False])
+            if direction:#Forward in time.
+                if (frame_idx+pos_range) < len(self.sequence_map[seq_name]): #
+                    positive_frame = self.sequence_map[seq_name][frame_idx+pos_range]
+                else:
+                    positive_frame = self.sequence_map[seq_name][frame_idx-pos_range] #This will rarely occur. We will use previous instead of next.
+            else:
+                if frame_idx!=0:
+                    positive_frame = self.sequence_map[seq_name][frame_idx-pos_range]
+                else:
+                    positive_frame = self.sequence_map[seq_name][0+pos_range] #This will rarely occur. We will use the next instead of the previous
+            #import random
+            for i in range(0,4): #The negative can be any other frame. 
+                negative_frame = random.sample(self.sequence_map[seq_name],1)[0] #Uniform random sample for the negative.
+                negative_frame_idx = negative_frame["frame_idxs"][0]
+                if abs(frame_idx-negative_frame_idx) > margin:
+                    break #Our search is complete!
+            #It could happen that we dont find a good negative within 3 attempt, but this is highly 
+            #unlikely and should be considered "noise" that won't affect the model.
             
+            if len(meta["frame_idxs"])>1:
+                print(f"To many fram idxs for sample {seq_name}/{meta['frame_idxs']}")
+            if len(positive_frame["frame_idxs"])>1:
+                print(f"To many fram idxs for sample {seq_name}/{positive_frame['frame_idxs']}")
+            if len(negative_frame["frame_idxs"])>1:
+                print(f"To many fram idxs for sample {seq_name}/{negative_frame['frame_idxs']}")
+            meta["frame_idxs"] = [meta["frame_idxs"][0]]
+            meta["POINT_2D"] = [meta["POINT_2D"][0]] #Handle rarely occuring strays
+            positive_frame["frame_idxs"] = [positive_frame["frame_idxs"][0]]
+            positive_frame["POINT_2D"] = [positive_frame["POINT_2D"][0]] #Handle rarely occuring strays
+            negative_frame["frame_idxs"] = [negative_frame["frame_idxs"][0]]
+            negative_frame["POINT_2D"] = [negative_frame["POINT_2D"][0]] #Handle rarely occuring strays
+            assert len(meta["frame_idxs"])==1
+            assert len(positive_frame["frame_idxs"])==1
+                
+            meta["frame_idxs"].append(positive_frame["frame_idxs"][0])
+            meta["POINT_2D"].append(positive_frame["POINT_2D"][0])
+
+            meta["frame_idxs"].append(negative_frame["frame_idxs"][0])
+            meta["POINT_2D"].append(negative_frame["POINT_2D"][0])
+            
+            sample = {
+                field: np.stack([
+                    self._decode_jpeg(seq_data[field][frame_idx])
+                    if field == "IMAGE" else seq_data[field][frame_idx]
+                    for frame_idx in meta["frame_idxs"]
+                ]) for field in self.target_fields
+            }
+
+            uid = f"hdf5_{seq_name}_" + str(seq_data["IMAGE_ID"][meta["frame_idxs"][0]])
+            sample = {
+                "SEQ_IDX": seq_name,
+                "UID": uid, #TODO: Harmonize Unique Identifiers for evaluation.
+                "FRAME_REAL_IDXS": np.asarray([seq_data["IMAGE_ID"][idx] for idx in meta["frame_idxs"]]),
+                "FRAME_IDXS": np.asarray(meta["frame_idxs"]),
+                "POINTS": np.pad(np.asarray(meta["POINT_2D"]), ((0, 0), (0, 0), (0, 2))),  # pad 2d kpts for augments
+                "CAT_ID": self.objects.index(seq_name.split("/")[0]),
+                **sample,
+            }
+            assert len(sample["FRAME_IDXS"])==3
+            assert len(sample["FRAME_REAL_IDXS"])==3
+            assert len(sample["POINTS"])==3
+            assert len(sample["IMAGE"])==3  
         else:
             raise NotImplementedError
         if self.transforms is not None:
@@ -411,7 +485,7 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
         if self.pairing_strategy=="next":
             self.valid_sample_subset = [idx for idx, m in dataset.frame_pair_map.items() if m["seq_name"] in self.valid_seq_subset]
             self.train_sample_subset = [idx for idx, m in dataset.frame_pair_map.items() if m["seq_name"] in self.train_seq_subset]
-        elif self.pairing_strategy=="uniform":
+        elif self.pairing_strategy in ["uniform","tcn_triplet"]:
             self.valid_sample_subset = [idx for idx, m in enumerate(dataset.frame_list) if m["seq_name"] in self.valid_seq_subset]
             self.train_sample_subset = [idx for idx, m in enumerate(dataset.frame_list) if m["seq_name"] in self.train_seq_subset]
         else:

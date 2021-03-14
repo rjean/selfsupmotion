@@ -304,6 +304,10 @@ class SimSiam(pl.LightningModule):
         self.loss_function = hyper_params.get("loss_function", "simsiam")
         self.ntxent_temp = hyper_params.get("ntxent_temp", 0.5)
 
+        if self.loss_function=="triplet":
+            #For TCN triplet, gap is 0.2. Other parameter follow baseline implementation.
+            self.triplet_loss = torch.nn.TripletMarginLoss(margin=0.2)
+
         self.monitor_accuracy = hyper_params.get("monitor_accuracy", True) #Enabled by default. Can be disabled if it takes too much memory.
 
         self.accumulate_grad_batches_custom = hyper_params.get("accumulate_grad_batches_custom",1)
@@ -336,7 +340,7 @@ class SimSiam(pl.LightningModule):
         self.lr_schedule = np.concatenate((warmup_lr_schedule, cosine_lr_schedule))
 
 
-        self.nce = torch.nn.CrossEntropyLoss()
+        #self.nce = torch.nn.CrossEntropyLoss()
 
         self.detectron_resnet_layer4 = None
 
@@ -478,6 +482,13 @@ class SimSiam(pl.LightningModule):
             z1 = F.normalize(z1, dim=-1)
             z2 = F.normalize(z2, dim=-1)
             loss = self.nt_xent_loss(z1, z2, self.ntxent_temp)
+        elif self.loss_function=="triplet": #Normalized temperature scaled cross entrolpy loss
+            assert len(crops)==3, "Triplet loss requires anchors, positive and negative samples"
+            anchor, positive, negative = crops
+            f1, z1, h1 = self.online_network(anchor)
+            f2, z2, h2 = self.online_network(positive)
+            f3, z3, h3 = self.online_network(negative)
+            loss = self.triplet_loss(z1,z2,z3)
         elif self.loss_function=="cyclic":
             assert len(crops)==3, "Only triplets are supported for the Cyclic Loss"
             assert self.cyclic_predictor is not None

@@ -5,6 +5,7 @@ import logging
 import os
 import shutil
 import sys
+from traitlets.traitlets import default
 import yaml
 
 import mlflow
@@ -155,6 +156,9 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger, tbx_logger):
     if "precision" not in hyper_params:
         hyper_params["precision"] = 16
 
+    if "pairing_strategy" not in hyper_params:
+        hyper_params["pairing_strategy"]="next"
+
     log_exp_details(os.path.realpath(__file__), args)
 
     if not data_dir.endswith(".hdf5"):
@@ -179,6 +183,7 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger, tbx_logger):
             crop_strategy=hyper_params.get("crop_strategy"),
             sync_hflip=hyper_params.get("sync_hflip"),
             resort_keypoints=hyper_params.get("resort_keypoints"),
+            pairing_strategy=hyper_params.get("pairing_strategy")
         )
         dm.setup()
 
