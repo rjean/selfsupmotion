@@ -22,7 +22,7 @@ gpus: 1
 num_workers: 16
 seed: None
 precision: 16
-early_stop_metric: none
+early_stop_metric: val_accuracy
 shared_transform: False
 crop_scale_min: 0.2
 crop_scale_max: 1.0
