@@ -5,6 +5,7 @@ import logging
 import os
 import shutil
 import sys
+from torch.nn.modules.linear import Identity
 from traitlets.traitlets import default
 import yaml
 
@@ -57,6 +58,7 @@ def main():
     parser.add_argument("--embeddings-device",type=str,default="cuda",help="Which device to use for embeddings generation.")
     parser.add_argument('--embeddings', action='store_true',help="Skip training and generate embeddings for evaluation.")
     parser.add_argument('--embeddings-ckpt', type=str, default=None, help="Checkpoint to load when generating embeddings.")
+    #parser.add_argument("--embeddings")
     parser.add_argument("--dryrun", action="store_true", help="Dry-run by training on the validtion set. Use only to test loop code.")
 
     mlflow_save_dir = "./mlruns"  # make into arg?
@@ -231,12 +233,25 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger, tbx_logger):
         if args.embeddings_ckpt is None:
             raise ValueError("Please manually provide the checkpoints using the --embeddings-ckpt argument")
         model = load_model(hyper_params, checkpoint=args.embeddings_ckpt)
-        ckpt = torch.load(args.embeddings_ckpt)
-        print(f"Loading from weights from {args.embeddings_ckpt}")
-        model.load_state_dict(ckpt["state_dict"])
+        special = False
+        if "SPECIAL:" not in args.embeddings_ckpt:
+            ckpt = torch.load(args.embeddings_ckpt)
+            print(f"Loading from weights from {args.embeddings_ckpt}")
+            model.load_state_dict(ckpt["state_dict"])
+        elif args.embeddings_ckpt=="SPECIAL:IMAGENET":
+            model.online_network.encoder = torch.hub.load('pytorch/vision:v0.6.0', 'resnet50', pretrained=True)
+            model.online_network.encoder.fc = Identity()
+            special = True
+        elif args.embeddings_ckpt=="SPECIAL:RANDOM":
+            model.online_network.encoder = torch.hub.load('pytorch/vision:v0.6.0', 'resnet50', pretrained=False)
+            model.online_network.encoder.fc = Identity()
+            special=True
+        else:
+            raise ValueError(f"Unsuported special checkpoint: {args.embeddings_ckpt}")
+
         #model.load_from_checkpoint(args.embeddings_ckpt)
-        generate_embeddings(args, model, datamodule=dm,train=True, image_size=hyper_params["image_size"])
-        generate_embeddings(args, model, datamodule=dm,train=False, image_size=hyper_params["image_size"])
+        generate_embeddings(args, model, datamodule=dm,train=True, image_size=hyper_params["image_size"], special=special)
+        generate_embeddings(args, model, datamodule=dm,train=False, image_size=hyper_params["image_size"], special=special)
     else:
         save_list_to_file(f"{output_dir}/train_sequences.txt", dm.train_dataset.seq_subset)
         save_list_to_file(f"{output_dir}/val_sequences.txt", dm.val_dataset.seq_subset)
@@ -259,7 +274,7 @@ from tqdm import tqdm
 import torch.nn.functional as F 
 import numpy as np
 
-def generate_embeddings(args, model, datamodule, train=True, image_size=224):
+def generate_embeddings(args, model, datamodule, train=True, image_size=224, special=False):
     if train:
         dataloader = datamodule.train_dataloader(evaluation=True) #Do not use data augmentation for evaluation.
         dataset  = datamodule.train_dataset
@@ -302,8 +317,12 @@ def generate_embeddings(args, model, datamodule, train=True, image_size=224):
             #_, z1, h1 = model.online_network(images1)
             #features= projector(encoder(images1)[0])
             #features = z1
-            features, _, _ = model.online_network(images1)
-            #features = model.online_network.encoder(images1)[0]
+            if not special:
+                features, _, _ = model.online_network(images1)
+            else:
+                #Were doing resnet-50 evaluation here!
+                features = model.online_network.encoder(images1)
+                assert features.shape[1]==2048
 
                 #features=encoder(images)[0]
             features = F.normalize(features, dim=1)
