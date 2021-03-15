@@ -15,7 +15,7 @@ tuple_length: 2
 frame_offset: 1
 tuple_offset: 1
 patience: 10
-max_epoch: 100
+max_epoch: 25
 image_size: 224
 exp_name: pretrain_224_synchflip
 gpus: 1
