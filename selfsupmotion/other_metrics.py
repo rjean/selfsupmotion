@@ -170,6 +170,7 @@ def main():
     #parser.add_argument("--legacy", action="store_true", help="Deprecated legacy evalution mode")
     parser.add_argument("--test", action="store_true", help="Evaluate on test set embeddings")
     parser.add_argument("--class-accuracy", action="store_true", help="Evaluate on test set embeddings")
+    parser.add_argument("--sequence", action="store_true", help="Sequence re-id metrics")
     args = parser.parse_args()
     #TODO: Refactor the experiment handler outside of the Zero Shot Pose module.
     print(f"Running for experiment {args.experiment}")
@@ -205,11 +206,13 @@ def main():
         total_matches=(experiment.info_df["sequence_uid"]==seq_uid).sum()
         seq_uid_count_map[seq_uid]=total_matches
 
-    #othermetrics = OtherMetrics(experiment)
-    df = compute_all_results(experiment)
-    print(f"Re-id: {df['reid'].mean():0.2f}")
-    print(f"Jitter: {df['jitter'].mean():0.2f}")
-    print(f"AUC: {df['AUC'].mean():0.2f}")
+    if args.sequence:
+        #othermetrics = OtherMetrics(experiment)
+        df = compute_all_results(experiment)
+        print(f"Re-id: {df['reid'].mean()*100:0.2f}")
+        print(f"Jitter: {df['jitter'].mean():0.2f}")
+        print(f"AUC: {df['AUC'].mean():0.2f}")
+        df.to_csv(f"{args.experiment}/othermetrics.csv")
     #df["jitter"].mean()
     #df["AUC"].mean()
 
