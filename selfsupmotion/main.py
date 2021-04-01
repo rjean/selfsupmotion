@@ -57,6 +57,7 @@ def main():
     parser.add_argument('--debug', action='store_true')
     parser.add_argument("--embeddings-device",type=str,default="cuda",help="Which device to use for embeddings generation.")
     parser.add_argument('--embeddings', action='store_true',help="Skip training and generate embeddings for evaluation.")
+    parser.add_argument('--embeddings-test', action='store_true',help="Skip training and generate test embeddings for evaluation.")
     parser.add_argument('--embeddings-ckpt', type=str, default=None, help="Checkpoint to load when generating embeddings.")
     #parser.add_argument("--embeddings")
     parser.add_argument("--dryrun", action="store_true", help="Dry-run by training on the validtion set. Use only to test loop code.")
@@ -163,9 +164,15 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger, tbx_logger):
 
     log_exp_details(os.path.realpath(__file__), args)
 
-    if not data_dir.endswith(".hdf5"):
-        data_dir = os.path.join(data_dir, "extract_s5_raw.hdf5")
+    
     if args.data_module=="hdf5":
+        valid_split_ratio = 0.1
+        if not data_dir.endswith(".hdf5"):
+            if args.embeddings_test: #Test set for evaluation.
+                data_dir = os.path.join(data_dir, "extract_s5_raw_test.hdf5")
+                valid_split_ratio=1 #All the test is is used for validation!
+            else: #Train/validation set.
+                data_dir = os.path.join(data_dir, "extract_s5_raw.hdf5")
         dm = selfsupmotion.data.objectron.hdf5_parser.ObjectronFramePairDataModule(
             hdf5_path=data_dir,
             tuple_length=hyper_params.get("tuple_length"),
@@ -185,7 +192,8 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger, tbx_logger):
             crop_strategy=hyper_params.get("crop_strategy"),
             sync_hflip=hyper_params.get("sync_hflip"),
             resort_keypoints=hyper_params.get("resort_keypoints"),
-            pairing_strategy=hyper_params.get("pairing_strategy")
+            pairing_strategy=hyper_params.get("pairing_strategy"),
+            valid_split_ratio=valid_split_ratio
         )
         dm.setup()
 
@@ -215,10 +223,12 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger, tbx_logger):
         raise ValueError(f"Invalid datamodule specified on CLI : {args.data_module}")
 
     if "num_samples" not in hyper_params:
+        hyper_params["num_samples"] = None
         if hasattr(dm, "train_dataset"):
-            hyper_params["num_samples"] = len(dm.train_dataset)
-        else:
-            hyper_params["num_samples"] = None
+            if dm.train_dataset is not None:
+                hyper_params["num_samples"] = len(dm.train_dataset)
+        #else:
+            
 
     if "num_samples_valid" not in hyper_params:
         if hasattr(dm, "val_dataset"):
@@ -229,7 +239,7 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger, tbx_logger):
     if "early_stop_metric" not in hyper_params:
         hyper_params["early_stop_metric"] = "val_loss"
     
-    if args.embeddings:
+    if args.embeddings or args.embeddings_test:
         if args.embeddings_ckpt is None:
             raise ValueError("Please manually provide the checkpoints using the --embeddings-ckpt argument")
         model = load_model(hyper_params, checkpoint=args.embeddings_ckpt)
@@ -250,8 +260,11 @@ def run(args, data_dir, output_dir, hyper_params, mlf_logger, tbx_logger):
             raise ValueError(f"Unsuported special checkpoint: {args.embeddings_ckpt}")
 
         #model.load_from_checkpoint(args.embeddings_ckpt)
-        generate_embeddings(args, model, datamodule=dm,train=True, image_size=hyper_params["image_size"], special=special)
-        generate_embeddings(args, model, datamodule=dm,train=False, image_size=hyper_params["image_size"], special=special)
+        if args.embeddings:
+            generate_embeddings(args, model, datamodule=dm,train=True, image_size=hyper_params["image_size"], special=special, prefix="train_")
+            generate_embeddings(args, model, datamodule=dm,train=False, image_size=hyper_params["image_size"], special=special, prefix="")
+        elif args.embeddings_test:
+            generate_embeddings(args, model, datamodule=dm,train=False, image_size=hyper_params["image_size"], special=special, prefix="test_")
     else:
         save_list_to_file(f"{output_dir}/train_sequences.txt", dm.train_dataset.seq_subset)
         save_list_to_file(f"{output_dir}/val_sequences.txt", dm.val_dataset.seq_subset)
@@ -274,15 +287,16 @@ from tqdm import tqdm
 import torch.nn.functional as F 
 import numpy as np
 
-def generate_embeddings(args, model, datamodule, train=True, image_size=224, special=False):
+def generate_embeddings(args, model, datamodule, train=True, image_size=224, special=False, prefix=None):
+    assert prefix is not None
     if train:
         dataloader = datamodule.train_dataloader(evaluation=True) #Do not use data augmentation for evaluation.
         dataset  = datamodule.train_dataset
-        prefix="train_"
+        #prefix="train_"
     else:
         dataloader = datamodule.val_dataloader(evaluation=True)
         dataset = datamodule.val_dataset
-        prefix=""
+        #prefix=""
 
     encoder, projector = model.online_network.encoder, model.online_network.projector
     local_progress=tqdm(dataloader)

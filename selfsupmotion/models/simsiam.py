@@ -323,21 +323,23 @@ class SimSiam(pl.LightningModule):
         # compute iters per epoch
         nb_gpus = len(self.gpus) if isinstance(self.gpus, (list, tuple)) else self.gpus
         assert isinstance(nb_gpus, int)
-        global_batch_size = self.num_nodes * nb_gpus * self.batch_size if nb_gpus > 0 else self.batch_size
-        self.train_iters_per_epoch = self.num_samples // global_batch_size
+        if self.num_samples is not None:
+            #When training, compute the learning rate schedule
+            global_batch_size = self.num_nodes * nb_gpus * self.batch_size if nb_gpus > 0 else self.batch_size
+            self.train_iters_per_epoch = self.num_samples // global_batch_size
 
-        # define LR schedule
-        warmup_lr_schedule = np.linspace(
-            self.start_lr, self.learning_rate, self.train_iters_per_epoch * self.warmup_epochs
-        )
-        iters = np.arange(self.train_iters_per_epoch * (self.max_epochs - self.warmup_epochs))
-        cosine_lr_schedule = np.array([
-            self.final_lr + 0.5 * (self.learning_rate - self.final_lr) *
-            (1 + math.cos(math.pi * t / (self.train_iters_per_epoch * (self.max_epochs - self.warmup_epochs))))
-            for t in iters
-        ])
+            # define LR schedule
+            warmup_lr_schedule = np.linspace(
+                self.start_lr, self.learning_rate, self.train_iters_per_epoch * self.warmup_epochs
+            )
+            iters = np.arange(self.train_iters_per_epoch * (self.max_epochs - self.warmup_epochs))
+            cosine_lr_schedule = np.array([
+                self.final_lr + 0.5 * (self.learning_rate - self.final_lr) *
+                (1 + math.cos(math.pi * t / (self.train_iters_per_epoch * (self.max_epochs - self.warmup_epochs))))
+                for t in iters
+            ])
 
-        self.lr_schedule = np.concatenate((warmup_lr_schedule, cosine_lr_schedule))
+            self.lr_schedule = np.concatenate((warmup_lr_schedule, cosine_lr_schedule))
 
 
         #self.nce = torch.nn.CrossEntropyLoss()
@@ -400,10 +402,11 @@ class SimSiam(pl.LightningModule):
             )
         #max_batch = math.ceil(self.num_samples/self.batch_size)
         encoder, projector = self.online_network.encoder, self.online_network.projector
-        
-        self.train_features = torch.zeros((self.num_samples, self.feature_dim))
-        self.train_meta = []
-        self.train_targets = -torch.ones((self.num_samples))
+        if self.num_samples is not None: #Not working on test set
+            self.train_features = torch.zeros((self.num_samples, self.feature_dim))
+            self.train_meta = []
+            self.train_targets = -torch.ones((self.num_samples))
+
         self.valid_features = torch.zeros((self.num_samples_valid, self.feature_dim))
         self.valid_meta = []
         self.cuda_train_features = None

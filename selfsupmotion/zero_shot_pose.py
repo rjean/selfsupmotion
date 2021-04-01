@@ -532,16 +532,18 @@ def get_iou_mp(idx:int #, symmetric=False, rescale=False,
     return best_iou , idx, match_idx
 
 class ExperimentHandlerFile():
-    def __init__(self, experiment:str=None):
+    def __init__(self, experiment:str=None, test=False):
         self.info_df = None
         self.train_info_df = None
         self.hdf5_dataset = None
+        self.hdf5_test_dataset = None
+        self.test= test
         if experiment:
-            self.read_experiment(experiment)
+            self.read_experiment(experiment, test)
         self.source_image_width = 1440
         self.source_image_height = 1920
 
-    def read_experiment(self, experiment: str):
+    def read_experiment(self, experiment: str, test: bool):
         """Read the output of a SimSiam experiment folder. (Embeddings and metadata)
 
         Args:
@@ -555,10 +557,14 @@ class ExperimentHandlerFile():
         if not use_cupy:
             load_fn = np.load
         
-        embeddings = load_fn(f"{experiment}/embeddings.npy")
+        info_prefix = ""
+        if test:
+            info_prefix="test_"
+            print("Loading experiment with test set instead of validation set embeddings!")
+        embeddings = load_fn(f"{experiment}/{info_prefix}embeddings.npy")
         if embeddings.shape [1]>embeddings.shape [0]:
             embeddings=embeddings.T
-        info = numpy.load(f"{experiment}/info.npy")
+        info = numpy.load(f"{experiment}/{info_prefix}info.npy")
         assert info.shape[0]==2
         train_new_filename = f"{experiment}/train_embeddings.npy"
         train_old_filename = f"{experiment}/training_embeddings.npy"
@@ -572,18 +578,21 @@ class ExperimentHandlerFile():
             #lines = content
         self.init_experiment(embeddings, info, train_embeddings, train_info)
         try:
-            with open(f"{experiment}/train_sequences.txt","r") as f:
-                train_sequences_t = f.read().split("\n")
-                valid_sequences_g = sorted(list((self.info_df["sequence_uid"].unique())))
-                for valid_sequence in valid_sequences_g:
-                    if valid_sequence in train_sequences_t:
-                        raise ValueError(f"The validation sequence {valid_sequence} was part of the training set!")
+            if not self.test:
+                with open(f"{experiment}/train_sequences.txt","r") as f:
+                    train_sequences_t = f.read().split("\n")
+                    valid_sequences_g = sorted(list((self.info_df["sequence_uid"].unique())))
+                    for valid_sequence in valid_sequences_g:
+                        if valid_sequence in train_sequences_t:
+                            raise ValueError(f"The validation sequence {valid_sequence} was part of the training set!")
         except FileNotFoundError:
             print(f"Warning, unable to find {experiment}/train_sequences.txt.\n We will not be able to make sure there is no overlap between training and validation!")
 
     def load_hdf5_file(self):
         if self.hdf5_dataset is None:
             self.hdf5_dataset = h5py.File('/home/raphael/datasets/objectron/extract_s5_raw.hdf5','r')
+        if self.test and self.hdf5_test_dataset is None:
+            self.hdf5_test_dataset = h5py.File('/home/raphael/datasets/objectron/extract_s5_raw_test.hdf5','r')
 
     def init_experiment(self, embeddings, info, train_embeddings, train_info):
         info_df = pd.DataFrame(info.T)
@@ -606,13 +615,23 @@ class ExperimentHandlerFile():
 
 
 
+    def _pick_hdf5_dataset(self, train):
+        if not self.test:
+            return self.hdf5_dataset
+        if not train and self.test:
+            return self.hdf5_test_dataset
+        if train:
+            return self.hdf5_dataset
+        raise ValueError("We should get here!")
+
     def get_points(self, idx: int, train=False):
         if self.mode=="raw":
             return self._raw_get_points(idx, train)
         elif self.mode=="hdf5":
             category, sequence, image_id  = self._hdf5_parse_uid(idx,train)
-            image_idx = list(self.hdf5_dataset[category][sequence]["IMAGE_ID"]).index(image_id)
-            return self.hdf5_dataset[category][sequence]["POINT_2D"][image_idx].reshape(9,3), self.hdf5_dataset[category][sequence]["POINT_3D"][image_idx].reshape(9,3)
+            hdf5_dataset = self._pick_hdf5_dataset(train)
+            image_idx = list(hdf5_dataset[category][sequence]["IMAGE_ID"]).index(image_id)
+            return hdf5_dataset[category][sequence]["POINT_2D"][image_idx].reshape(9,3), hdf5_dataset[category][sequence]["POINT_3D"][image_idx].reshape(9,3)
         else:
             raise ValueError(f"Mode not supported: {self.mode}")
 
@@ -620,8 +639,9 @@ class ExperimentHandlerFile():
         df = self._get_df(train)
         if self.mode=="hdf5":
             category, sequence, image_id  = self._hdf5_parse_uid(idx,train)
-            image_idx = list(self.hdf5_dataset[category][sequence]["IMAGE_ID"]).index(image_id)
-            jpeg_data = self.hdf5_dataset[category][sequence]["IMAGE"][image_idx]
+            hdf5_dataset = self._pick_hdf5_dataset(train)
+            image_idx = list(hdf5_dataset[category][sequence]["IMAGE_ID"]).index(image_id)
+            jpeg_data = hdf5_dataset[category][sequence]["IMAGE"][image_idx]
             #image = Image.frombytes('RGBA', (128,128), jpeg_data, 'raw')
             image = Image.open(io.BytesIO(jpeg_data))
             #img= cv2.imdecode(self.hdf5_dataset[category][sequence]["IMAGE"][image_idx],cv2.IMREAD_ANYCOLOR)
@@ -695,8 +715,9 @@ class ExperimentHandlerFile():
             return self._raw_get_plane(idx, train)
         elif self.mode=="hdf5":
             category, sequence, image_id  = self._hdf5_parse_uid(idx,train)
-            image_idx = list(self.hdf5_dataset[category][sequence]["IMAGE_ID"]).index(image_id)
-            return self.hdf5_dataset[category][sequence]["PLANE_CENTER"][image_idx], self.hdf5_dataset[category][sequence]["PLANE_NORMAL"][image_idx]
+            hdf5_dataset = self._pick_hdf5_dataset(train)
+            image_idx = list(hdf5_dataset[category][sequence]["IMAGE_ID"]).index(image_id)
+            return hdf5_dataset[category][sequence]["PLANE_CENTER"][image_idx], hdf5_dataset[category][sequence]["PLANE_NORMAL"][image_idx]
         else:
             raise ValueError(f"Mode not supported: {self.mode}")
  
@@ -753,8 +774,9 @@ class ExperimentHandlerFile():
             return self._raw_get_intrinsics(idx, train)
         elif self.mode=="hdf5":
             category, sequence, image_id  = self._hdf5_parse_uid(idx,train)
-            image_idx = list(self.hdf5_dataset[category][sequence]["IMAGE_ID"]).index(image_id)
-            return self.hdf5_dataset[category][sequence]["INTRINSIC_MATRIX"][image_idx].reshape(3,3)
+            hdf5_dataset = self._pick_hdf5_dataset(train)
+            image_idx = list(hdf5_dataset[category][sequence]["IMAGE_ID"]).index(image_id)
+            return hdf5_dataset[category][sequence]["INTRINSIC_MATRIX"][image_idx].reshape(3,3)
         else:
             raise ValueError(f"Mode not supported: {self.mode}")
 
@@ -824,11 +846,12 @@ def main():
     parser.add_argument("--rescale", action="store_true",help="Rescale 3d bounding box")
     parser.add_argument("--random_bbox", action="store_true", help="Fit a randomly selected bbox instead of the nearest neighbor")
     parser.add_argument("--random_bbox_same", action="store_true", help="Fit a randomly selected bbox from same category instead of the nearest neighbor")
-    parser.add_argument("--trainset_ratio", type=float, default=1, help="Ratio of the training set sequences used for inference")
+    parser.add_argument("--trainset-ratio", type=float, default=1, help="Ratio of the training set sequences used for inference")
     parser.add_argument("--single_thread", action="store_true", help="Disable multithreading.")
     parser.add_argument("--cpu", action="store_true", help="Disable cuda accelaration.")
     parser.add_argument("--no_align_axis", action="store_true", help="Don't to to align axis with ground plane.")
     parser.add_argument("--legacy", action="store_true", help="Deprecated legacy evalution mode")
+    parser.add_argument("--test", action="store_true", help="Evaluate on test set embeddings")
     args = parser.parse_args()
     symmetric = args.symmetric
     rescale = args.rescale
@@ -838,7 +861,7 @@ def main():
     if args.cpu:
         use_cupy=False
 
-    experiment = ExperimentHandlerFile(args.experiment)
+    experiment = ExperimentHandlerFile(args.experiment, args.test)
 
     if args.trainset_ratio > 0 and args.trainset_ratio <= 1:
         experiment.set_trainsubset(args.trainset_ratio)

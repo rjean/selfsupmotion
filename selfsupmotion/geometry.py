@@ -417,7 +417,7 @@ def align_with_bbox(train_point2d_px, train_bbox, valid_bbox):
     return aligned_points2d_px
 
 
-def draw_bbox(im: PIL.Image, points2d_px: list, line_color=(0,255,0), pixel_center_color=(0,255,0), object_center_color=(255,0,0)):
+def draw_bbox(im: PIL.Image, points2d_px: list, line_color=(0,255,0), pixel_center_color=(0,255,0), object_center_color=(255,0,0), line_width=5):
     """Draw a projected 2d bounding box (in pixels) over a Pillow Image
 
     Args:
@@ -448,7 +448,7 @@ def draw_bbox(im: PIL.Image, points2d_px: list, line_color=(0,255,0), pixel_cent
         p1, p2 = edge
         x1, y1 = points2d_px[p1]
         x2, y2 = points2d_px[p2]
-        draw.line((x1,y1,x2,y2), fill=line_color)
+        draw.line((x1,y1,x2,y2), fill=line_color, width=line_width)
     return im
 import math 
 

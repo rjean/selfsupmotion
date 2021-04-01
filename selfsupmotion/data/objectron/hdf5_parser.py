@@ -494,7 +494,10 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
         self.train_sample_count = len(self.train_sample_subset)
         assert len(np.intersect1d(self.valid_seq_subset, self.train_seq_subset)) == 0
         assert len(np.intersect1d(self.valid_sample_count, self.train_sample_count)) == 0
-        assert self.train_sample_count > 0 and self.valid_sample_count > 0
+        if "_test" not in self.hdf5_path:
+            assert self.train_sample_count > 0 and self.valid_sample_count > 0
+        else:
+            assert self.valid_sample_count > 0
         self.train_dataset = None  # will be initialized once setup is called
         self.val_dataset = None
 
@@ -520,6 +523,8 @@ class ObjectronFramePairDataModule(pytorch_lightning.LightningDataModule):
             _resort_keypoints=self.resort_keypoints,
             pairing_strategy=self.pairing_strategy
         )
+        if "_test" in self.hdf5_path:
+            return  #No train set to setup if were are using the test set!
         self.train_dataset = ObjectronHDF5FrameTupleParser(
             hdf5_path=self.hdf5_path,
             seq_subset=self.train_seq_subset,
