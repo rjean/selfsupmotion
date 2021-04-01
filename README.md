@@ -5,6 +5,7 @@
 
 This repository contains code used to experiment on self-supervised learning from videos. 
 
+![Laptop pose estimation GIF](media/laptop.gif)
 
 # Licence
 
