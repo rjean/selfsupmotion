@@ -9,6 +9,23 @@ Self-Supervised Motion Understanding
 
 * Free software: Apache Software License 2.0
 
+## Notable Dependencies
+
+- pytorch lighning 1.1.x (1.2.x not supported!)
+- pytorch 1.7
+- opencv
+- mlflow
+- open3d
+- h5py
+- albumentations
+
+# Installing.
+Install as a module.
+
+```
+pip install -e .
+```
+
 ## Pre-training a model.
 Assuming you have the prepared HDF5 data in the /home/raphael/datasets/objectron folder, you can start pre-training with the following command:
 ``` 

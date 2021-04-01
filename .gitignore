@@ -1,6 +1,7 @@
 .idea
 mlruns/
 tensorboard/
+gold/
 lightning_logs
 tensorboard
 output/
