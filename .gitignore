@@ -114,3 +114,9 @@ venv.bak/
 
 # mypy
 .mypy_cache/
+
+notebooks/*.png 
+notebooks/*.mp4
+notebooks/*.jpg
+*.ckpt 
+events.out*
