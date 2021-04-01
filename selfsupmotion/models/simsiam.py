@@ -304,6 +304,10 @@ class SimSiam(pl.LightningModule):
         self.loss_function = hyper_params.get("loss_function", "simsiam")
         self.ntxent_temp = hyper_params.get("ntxent_temp", 0.5)
 
+        if self.loss_function=="triplet":
+            #For TCN triplet, gap is 0.2. Other parameter follow baseline implementation.
+            self.triplet_loss = torch.nn.TripletMarginLoss(margin=0.2)
+
         self.monitor_accuracy = hyper_params.get("monitor_accuracy", True) #Enabled by default. Can be disabled if it takes too much memory.
 
         self.accumulate_grad_batches_custom = hyper_params.get("accumulate_grad_batches_custom",1)
@@ -319,24 +323,26 @@ class SimSiam(pl.LightningModule):
         # compute iters per epoch
         nb_gpus = len(self.gpus) if isinstance(self.gpus, (list, tuple)) else self.gpus
         assert isinstance(nb_gpus, int)
-        global_batch_size = self.num_nodes * nb_gpus * self.batch_size if nb_gpus > 0 else self.batch_size
-        self.train_iters_per_epoch = self.num_samples // global_batch_size
+        if self.num_samples is not None:
+            #When training, compute the learning rate schedule
+            global_batch_size = self.num_nodes * nb_gpus * self.batch_size if nb_gpus > 0 else self.batch_size
+            self.train_iters_per_epoch = self.num_samples // global_batch_size
 
-        # define LR schedule
-        warmup_lr_schedule = np.linspace(
-            self.start_lr, self.learning_rate, self.train_iters_per_epoch * self.warmup_epochs
-        )
-        iters = np.arange(self.train_iters_per_epoch * (self.max_epochs - self.warmup_epochs))
-        cosine_lr_schedule = np.array([
-            self.final_lr + 0.5 * (self.learning_rate - self.final_lr) *
-            (1 + math.cos(math.pi * t / (self.train_iters_per_epoch * (self.max_epochs - self.warmup_epochs))))
-            for t in iters
-        ])
+            # define LR schedule
+            warmup_lr_schedule = np.linspace(
+                self.start_lr, self.learning_rate, self.train_iters_per_epoch * self.warmup_epochs
+            )
+            iters = np.arange(self.train_iters_per_epoch * (self.max_epochs - self.warmup_epochs))
+            cosine_lr_schedule = np.array([
+                self.final_lr + 0.5 * (self.learning_rate - self.final_lr) *
+                (1 + math.cos(math.pi * t / (self.train_iters_per_epoch * (self.max_epochs - self.warmup_epochs))))
+                for t in iters
+            ])
 
-        self.lr_schedule = np.concatenate((warmup_lr_schedule, cosine_lr_schedule))
+            self.lr_schedule = np.concatenate((warmup_lr_schedule, cosine_lr_schedule))
 
 
-        self.nce = torch.nn.CrossEntropyLoss()
+        #self.nce = torch.nn.CrossEntropyLoss()
 
         self.detectron_resnet_layer4 = None
 
@@ -396,10 +402,11 @@ class SimSiam(pl.LightningModule):
             )
         #max_batch = math.ceil(self.num_samples/self.batch_size)
         encoder, projector = self.online_network.encoder, self.online_network.projector
-        
-        self.train_features = torch.zeros((self.num_samples, self.feature_dim))
-        self.train_meta = []
-        self.train_targets = -torch.ones((self.num_samples))
+        if self.num_samples is not None: #Not working on test set
+            self.train_features = torch.zeros((self.num_samples, self.feature_dim))
+            self.train_meta = []
+            self.train_targets = -torch.ones((self.num_samples))
+
         self.valid_features = torch.zeros((self.num_samples_valid, self.feature_dim))
         self.valid_meta = []
         self.cuda_train_features = None
@@ -478,6 +485,13 @@ class SimSiam(pl.LightningModule):
             z1 = F.normalize(z1, dim=-1)
             z2 = F.normalize(z2, dim=-1)
             loss = self.nt_xent_loss(z1, z2, self.ntxent_temp)
+        elif self.loss_function=="triplet": #Normalized temperature scaled cross entrolpy loss
+            assert len(crops)==3, "Triplet loss requires anchors, positive and negative samples"
+            anchor, positive, negative = crops
+            f1, z1, h1 = self.online_network(anchor)
+            f2, z2, h2 = self.online_network(positive)
+            f3, z3, h3 = self.online_network(negative)
+            loss = self.triplet_loss(z1,z2,z3)
         elif self.loss_function=="cyclic":
             assert len(crops)==3, "Only triplets are supported for the Cyclic Loss"
             assert self.cyclic_predictor is not None
